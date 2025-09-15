@@ -2,6 +2,10 @@ import os
 import time
 import json
 import asyncio
+import glob
+import sys
+import argparse
+from pathlib import Path
 from datetime import datetime
 from loguru import logger
 from dotenv import load_dotenv
@@ -39,12 +43,45 @@ logger.add(
 logger.info(f"Logging session to file: {log_filename}")
 
 
+def filter_important_logs_with_context(logs):
+    """Filter logs to keep ERROR/WARN/CRITICAL logs plus 5 logs before and after each error"""
+    important_levels = ['ERROR', 'WARN', 'WARNING', 'CRITICAL', 'FATAL']
+    context_window = 2  # logs before and after
+    
+    # Find indices of error logs
+    error_indices = []
+    for i, log in enumerate(logs):
+        if any(level in log.upper() for level in important_levels):
+            error_indices.append(i)
+    
+    # Collect error logs with context
+    selected_indices = set()
+    for error_idx in error_indices:
+        # Add 5 logs before, the error log, and 5 logs after
+        start = max(0, error_idx - context_window)
+        end = min(len(logs), error_idx + context_window + 1)
+        for i in range(start, end):
+            selected_indices.add(i)
+    
+    # Sort indices and extract logs
+    filtered_logs = [logs[i] for i in sorted(selected_indices)]
+    
+    logger.info(f"Found {len(error_indices)} error logs")
+    logger.info(f"Filtered {len(logs)} total logs down to {len(filtered_logs)} logs (with context)")
+    logger.info(f"Context window: {context_window} logs before and after each error")
+    
+    return filtered_logs
+
 def stream_logs_from_file(log_file_path):
     """Simple function to read and stream logs from file"""
     try:
         with open(log_file_path, 'r') as file:
             logs = [line.strip() for line in file.readlines() if line.strip()]
-        return logs
+        
+        # Filter to important logs with context (5 before and 5 after each error)
+        filtered_logs = filter_important_logs_with_context(logs)
+        return filtered_logs
+        
     except FileNotFoundError:
         logger.error(f"File not found: {log_file_path}")
         return []
@@ -192,7 +229,6 @@ async def process_log_file(agent, log_file_path):
             
             # Wait 3 seconds between each log analysis
             logger.debug(f"Waiting 3 seconds before next log...")
-            time.sleep(3)
             
             # Show progress every 10 logs and verify memory
             if i % 10 == 0:
@@ -273,12 +309,31 @@ Analyser_agent, agent_runner = create_log_analysis_agent()
 
 # Main execution
 async def main():
-    # Process the NiFi log file
-    log_file_path = "/Users/shtlpmac071/Documents/Real_logs_a2a_imple/nifi-app_2025-09-12_04.0.log"
+    # Give folder path here - it will process all .log files in the folder
+    log_folder_path = "/Users/shtlpmac071/Documents/Real_logs_a2a_imple/Real_logs_mulit_agent_Implementation/logs"
     
-    # Process all logs with the agent
-    results = await process_log_file(Analyser_agent, log_file_path)
-    logger.success(f"Processed {len(results)} logs total!")
+    # Find all log files in the folder
+    import glob
+    log_files = glob.glob(os.path.join(log_folder_path, "*.log"))
+    
+    if not log_files:
+        logger.error(f"No .log files found in folder: {log_folder_path}")
+        return
+    
+    logger.info(f"Found {len(log_files)} log files to process:")
+    for log_file in log_files:
+        logger.info(f"  - {os.path.basename(log_file)}")
+    
+    all_results = []
+    
+    # Process each log file
+    for i, log_file_path in enumerate(log_files, 1):
+        logger.info(f"\nProcessing file {i}/{len(log_files)}: {os.path.basename(log_file_path)}")
+        results = await process_log_file(Analyser_agent, log_file_path)
+        all_results.extend(results)
+        logger.success(f"Completed {os.path.basename(log_file_path)}: {len(results)} logs processed")
+    
+    logger.success(f"All done! Processed {len(all_results)} logs total from {len(log_files)} files!")
     
 if __name__ == "__main__":
     asyncio.run(main())

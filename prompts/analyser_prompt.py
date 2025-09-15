@@ -27,6 +27,12 @@ Task:
     2. Likely cause or affected component
     3. Recommended next steps or remediation
 
+IMPORTANT: When providing recommendations, consider that:
+- You are analyzing ALL available log files from the system
+- Do NOT recommend "check more logs" since this is a comprehensive log analysis
+- Focus on actionable steps like configuration changes, service restarts, resource allocation, etc.
+- Base recommendations on the actual error patterns and context from the memory
+
 Respond in structured JSON format as follows:
 {
   "application": Application name,
@@ -46,5 +52,13 @@ Steps:
 1. First, use add_log_to_memory tool to add this log to memory
 2. Then, use get_memory_context tool to get context of recent logs
 3. Analyze if this log entry indicates an error or anomaly based on the context and application purpose.
-4. If it's an anomaly, provide remediation steps
+4. If it's an anomaly, provide specific actionable remediation steps
+
+CONTEXT: You are analyzing a comprehensive set of log files from the entire application system. 
+Do NOT recommend checking additional logs. Instead, provide concrete actions like:
+- Configuration parameter changes
+- Service restart procedures  
+- Resource allocation adjustments
+- Code fixes or patches needed
+- Infrastructure changes required
 """

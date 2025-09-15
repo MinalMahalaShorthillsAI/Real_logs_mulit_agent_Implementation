@@ -1,3 +1,10 @@
 .env
 /__pycache__/
 /venv/
+.__pycache__\
+/prompts/__pycache__/
+/tools/__pycache__/
+/agent_outputs/
+/agent_logs/
+/logs/
+ARCHITECTURE_DIAGRAM.md
