@@ -1,11 +1,9 @@
 import os
-import time
 import json
 import asyncio
 import glob
-import sys
-import argparse
-from pathlib import Path
+import time
+import signal
 from datetime import datetime
 from loguru import logger
 from dotenv import load_dotenv
@@ -14,124 +12,98 @@ from google.adk.models import Gemini
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 from prompts.analyser_prompt import analysis_prompt_template, enhanced_instruction
-from tools.memory_tool import add_log_tool, get_context_tool
 from google.adk.tools.agent_tool import AgentTool
 from agent_2 import nifi_agent
 
-# Load environment variables from .env file
 load_dotenv()
 
-# Configure loguru with both console and file output
-logger.remove()  # Remove default handler
+# Configure logging
+logger.remove()
+logger.add(sink=lambda msg: print(msg, end=""), format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{function}</cyan> | <level>{message}</level>", level="INFO")
 
-# Console output
-logger.add(
-    sink=lambda msg: print(msg, end=""),  # Print to console
-    format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{function}</cyan> | <level>{message}</level>",
-    level="INFO"
-)
-
-# File output - save all logs to file
-from datetime import datetime
 log_filename = f"agent_logs/agent_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
 os.makedirs("agent_logs", exist_ok=True)
-
-logger.add(
-    sink=log_filename,
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {function} | {message}",
-    level="DEBUG"  # Capture everything in file
-)
-
+logger.add(sink=log_filename, format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {function} | {message}", level="DEBUG")
 logger.info(f"Logging session to file: {log_filename}")
 
 
-def filter_important_logs_with_context(logs):
-    """Filter logs to keep ERROR/WARN/CRITICAL logs plus 5 logs before and after each error"""
-    important_levels = ['ERROR', 'WARN', 'WARNING', 'CRITICAL', 'FATAL']
-    context_window = 2  # logs before and after
-    
-    # Find indices of error logs
-    error_indices = []
-    for i, log in enumerate(logs):
-        if any(level in log.upper() for level in important_levels):
-            error_indices.append(i)
-    
-    # Collect error logs with context
-    selected_indices = set()
-    for error_idx in error_indices:
-        # Add 5 logs before, the error log, and 5 logs after
-        start = max(0, error_idx - context_window)
-        end = min(len(logs), error_idx + context_window + 1)
-        for i in range(start, end):
-            selected_indices.add(i)
-    
-    # Sort indices and extract logs
-    filtered_logs = [logs[i] for i in sorted(selected_indices)]
-    
-    logger.info(f"Found {len(error_indices)} error logs")
-    logger.info(f"Filtered {len(logs)} total logs down to {len(filtered_logs)} logs (with context)")
-    logger.info(f"Context window: {context_window} logs before and after each error")
-    
-    return filtered_logs
+def cleanup_and_exit():
+    """Simple cleanup and exit"""
+    logger.info("🧹 Cleanup completed")
+    exit(0)
 
-def stream_logs_from_file(log_file_path):
-    """Simple function to read and stream logs from file"""
+# Only handle Ctrl+C for clean exit
+signal.signal(signal.SIGINT, lambda s, f: cleanup_and_exit())
+
+def is_error_log(log_line):
+    """Check if a single log line is an error log that needs agent analysis"""
+    if not log_line or not log_line.strip():
+        return False
+    
+    error_levels = ['ERROR', 'WARN', 'WARNING', 'CRITICAL', 'FATAL']
+    is_error = any(level in log_line.upper() for level in error_levels)
+    
+    if is_error:
+        logger.info(f"🚨 Error log detected: {log_line[:50]}...")
+    else:
+        logger.info(f"ℹ️  Not an error log: {log_line[:50]}...")
+    
+    return is_error
+
+def stream_logs_line_by_line(log_file_path):
+    """Stream logs line by line and yield only error logs for agent processing"""
     try:
-        with open(log_file_path, 'r') as file:
-            logs = [line.strip() for line in file.readlines() if line.strip()]
+        logger.info(f"🔄 Starting line-by-line streaming from: {log_file_path}")
         
-        # Filter to important logs with context (5 before and 5 after each error)
-        filtered_logs = filter_important_logs_with_context(logs)
-        return filtered_logs
+        with open(log_file_path, 'r') as file:
+            line_count = 0
+            error_count = 0
+            
+            for line in file:
+                line_count += 1
+                line = line.strip()
+                
+                if line and is_error_log(line):
+                    error_count += 1
+                    logger.debug(f"📨 Yielding error log #{error_count} (line {line_count}) to agent")
+                    yield line
+                
+                # Add delay to see the 0.5 second gap in filtering
+                time.sleep(0.5)
+                
+                if line_count % 1000 == 0:
+                    logger.debug(f"📊 Streaming progress: {line_count} lines processed, {error_count} errors found")
+        
+        logger.info(f"✅ Streaming complete: {line_count} total lines, {error_count} error logs sent to agent")
         
     except FileNotFoundError:
-        logger.error(f"File not found: {log_file_path}")
-        return []
+        logger.error(f"❌ File not found: {log_file_path}")
     except Exception as e:
-        logger.error(f"Error reading file: {e}")
-        return []
+        logger.error(f"❌ Error during streaming: {e}")
 
 def save_agent_interaction(log_index, log_entry, input_prompt, agent_output, session_id=None, output_dir="agent_outputs"):
-    """Save complete agent interaction including tool calls and context"""
-    
-    # Create output directory if it doesn't exist
+    """Save agent interaction data"""
     os.makedirs(output_dir, exist_ok=True)
-    
-    # Create timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    # Get current memory state
-    from tools.memory_tool import memory_buffer
-    current_memory = list(memory_buffer)
-    
-    # Save complete interaction data
     interaction_data = {
         "metadata": {
             "timestamp": timestamp,
             "log_index": log_index,
-            "session_id": session_id,
-            "processing_time": timestamp
+            "session_id": session_id
         },
         "agent_configuration": {
             "name": "log_analysis_agent",
-            "model": "gemini-2.5-pro",
-            "enhanced_instructions": enhanced_instruction,
-            "tools_available": ["add_log_to_memory", "get_memory_context", "nifi_agent_tool"],
-            "memory_buffer_size": f"{len(current_memory)}/100"
+            "model": "gemini-1.5-flash",
+            "tools_available": ["nifi_agent_tool"]
         },
         "log_analysis": {
             "original_log_entry": log_entry,
             "input_prompt_to_agent": input_prompt,
             "agent_analysis_output": agent_output
-        },
-        "memory_state": {
-            "buffer_size": len(current_memory),
-            "recent_logs_in_memory": current_memory[-5:] if current_memory else [],
-            "memory_context_available": len(current_memory) > 0
         }
     }
     
-    # Save to individual file for this log
     filename = f"{output_dir}/complete_log_{log_index:05d}_{timestamp}.json"
     
     try:
@@ -140,110 +112,80 @@ def save_agent_interaction(log_index, log_entry, input_prompt, agent_output, ses
     except Exception as e:
         logger.error(f"Failed to save interaction for log {log_index}: {e}")
 
-async def process_log_file(agent, log_file_path):
-    """Process logs from file - let the agent decide what's anomalous"""
+async def process_log_file(log_file_path):
+    """Process logs with real-time streaming - only error logs go to agent"""
+    logger.info(f"🚀 Starting real-time streaming processing from: {log_file_path}")
+    logger.info("🔄 Only ERROR logs will be sent to agent for analysis")
     
-    logger.info(f"Starting to process logs from: {log_file_path}")
-    logger.info("=" * 80)
-    
-    # Load all logs from file
-    all_logs = stream_logs_from_file(log_file_path)
-    
-    if not all_logs:
-        logger.error("No logs found to process")
-        return []
-    
-    logger.info(f"Loaded {len(all_logs)} log entries")
-    logger.info("Creating output directory for agent interactions...")
-    
-    # Create ONE session for ALL logs - this ensures memory persists
     session = await agent_runner.session_service.create_session(
         app_name="log_analysis_agent", 
         user_id="log_analyzer"
     )
-    logger.info(f"Created session: {session.id}")
+    logger.info(f"✅ Created session: {session.id}")
+    
+    error_log_count = 0
     
     try:
-        for i, log_entry in enumerate(all_logs, 1):
-            if i % 50 == 0:
-                logger.info(f"Processing log {i}/{len(all_logs)}")
+        for log_entry in stream_logs_line_by_line(log_file_path):
+            error_log_count += 1
+            logger.info(f"🚨 Processing ERROR log #{error_log_count}: {log_entry[:60]}...")
             
-            # Create prompt for the agent
             prompt = analysis_prompt_template.format(log_entry=log_entry)
             
-            # Send log to Gemini agent using the SAME session for memory persistence
-            logger.info(f"Sending log to Gemini agent (session: {session.id}): {log_entry[:50]}...")
-            
             try:
-                # Create content for the agent
                 content = types.Content(
                     parts=[types.Part.from_text(text=prompt)],
                     role="user"
                 )
                 
-                logger.info(f"Calling Gemini agent for log {i} (persistent session)...")
+                logger.info(f"📤 Calling Gemini agent for error log #{error_log_count}")
                 
-                # Get agent analysis - following ADK example pattern
                 agent_output = "No response from agent"
-                events_seen = 0
-                final_events_seen = 0
                 
                 async for event in agent_runner.run_async(
                     user_id=session.user_id, 
                     session_id=session.id,
                     new_message=content
                 ):
-                    events_seen += 1
-                    # Capture final response
                     if event.is_final_response():
-                        final_events_seen += 1
                         if event.content and event.content.parts:
                             for part in event.content.parts:
                                 if hasattr(part, 'text') and part.text:
                                     agent_output = part.text
                                     break
-                        
-                        # Break after processing final response
                         if agent_output != "No response from agent":
                             break
                 
-                if agent_output is None:
-                    agent_output = "No response from agent"
-                
             except Exception as e:
-                logger.error(f"Failed to call Gemini agent: {e}")
+                logger.error(f"❌ Failed to call Gemini agent: {e}")
                 agent_output = f"Error calling Gemini agent: {e}"
             
-            # Save complete interaction with full context
             save_agent_interaction(
-                log_index=i, 
+                log_index=error_log_count, 
                 log_entry=log_entry, 
                 input_prompt=prompt, 
                 agent_output=agent_output,
                 session_id=session.id
             )
             
+            if error_log_count % 10 == 0:
+                logger.info(f"📊 Progress: {error_log_count} error logs processed")
             
-            # Show progress every 50 logs
-            if i % 50 == 0:
-                logger.info(f"Progress: {i+1}/{len(all_logs)} logs processed")
+            time.sleep(0.5)
             
     except KeyboardInterrupt:
-        logger.warning("Processing stopped by user")
+        logger.warning("⚠️  Processing stopped by user")
     except Exception as e:
-        logger.error(f"Error during processing: {e}")
+        logger.error(f"❌ Error during processing: {e}")
     
-    logger.info("Processing complete - all interactions saved to agent_outputs/")
+    logger.info(f"✅ Streaming processing complete - {error_log_count} error logs analyzed")
+    logger.info("💾 All interactions saved to agent_outputs/")
 
 def create_log_analysis_agent():
-    """Create and configure the Log Analysis Agent following ADK LlmAgent patterns"""
+    """Create and configure the Log Analysis Agent"""
     try:
-        # NiFi buffer will auto-load when first accessed
-        logger.info("NiFi buffer will auto-load when needed")
-        
-        # Use Gemini 1.5 Flash model
         model = Gemini(
-            model_name="gemini-1.5-flash",
+            model_name="gemini-1.5-pro",
             generation_config={
                 "temperature": 0.1,
                 "max_output_tokens": 8192,
@@ -252,34 +194,20 @@ def create_log_analysis_agent():
         )
         logger.info("Gemini model configured")
         
-        # Create NiFi agent tool directly
         nifi_agent_tool = AgentTool(agent=nifi_agent)
-        
-        # Explicitly set the function name for the AgentTool
         nifi_agent_tool.name = "nifi_agent_tool"
 
-        # Create LlmAgent with tools
         agent = LlmAgent(
             name="log_analysis_agent",
             description="Application log analysis agent that identifies anomalies and can correlate with NiFi pipeline issues",
             model=model,
             instruction=enhanced_instruction,
-            tools=[
-                add_log_tool,
-                get_context_tool,
-                nifi_agent_tool  # Created directly here
-            ]
+            tools=[nifi_agent_tool]
         )
         
-        logger.info("Log Analysis Agent created with 3 tools")
+        logger.info("Log Analysis Agent created with NiFi correlation tool")
         
-        # Create in-memory runner for agent invocation
-        runner = InMemoryRunner(
-            agent=agent,
-            app_name="log_analysis_agent"
-        )
-        
-        return agent, runner
+        return agent, InMemoryRunner(agent=agent, app_name="log_analysis_agent")
         
     except Exception as e:
         logger.error(f"Failed to create Log Analysis Agent: {str(e)}")
@@ -290,11 +218,7 @@ Analyser_agent, agent_runner = create_log_analysis_agent()
 
 # Main execution
 async def main():
-    # Give folder path here - it will process all .log files in the folder
     log_folder_path = "/Users/shtlpmac071/Documents/Real_logs_a2a_imple/Real_logs_mulit_agent_Implementation/logs"
-    
-    # Find all log files in the folder
-    import glob
     log_files = glob.glob(os.path.join(log_folder_path, "*.log"))
     
     if not log_files:
@@ -305,16 +229,12 @@ async def main():
     for log_file in log_files:
         logger.info(f"  - {os.path.basename(log_file)}")
     
-    all_results = []
-    
-    # Process each log file
     for i, log_file_path in enumerate(log_files, 1):
         logger.info(f"\nProcessing file {i}/{len(log_files)}: {os.path.basename(log_file_path)}")
-        results = await process_log_file(Analyser_agent, log_file_path)
-        all_results.extend(results)
-        logger.info(f"Completed {os.path.basename(log_file_path)}: {len(results)} logs processed")
+        await process_log_file(log_file_path)
+        logger.info(f"Completed {os.path.basename(log_file_path)}")
     
-    logger.info(f"All done! Processed {len(all_results)} logs total from {len(log_files)} files!")
+    logger.info("All log files processed!")
     
 if __name__ == "__main__":
     asyncio.run(main())

@@ -7,7 +7,7 @@ from datetime import datetime
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.models import Gemini
 from google.adk.runners import InMemoryRunner
-from tools.nifi_buffer_tool import search_nifi_logs_tool, nifi_buffer_status_tool
+from tools.nifi_buffer_tool import search_nifi_logs_tool
 from prompts.nifi_agent_prompt import nifi_agent_instruction
 
 # Load environment variables
@@ -51,21 +51,20 @@ def create_nifi_agent():
         )
         logger.info("Gemini model configured for NiFi agent")
         
-        # NiFi analysis agent with its own tools
+        # Simple NiFi analysis agent with minimal tools
         nifi_agent = LlmAgent(
             name="nifi_app_log_analyzer",
-            description="NiFi log analyzer with 5-minute buffer and search capabilities",
+            description="Simple NiFi log analyzer focused on timestamp correlation",
             model=model,
             instruction=nifi_agent_instruction,
             tools=[
-                search_nifi_logs_tool,    # Search NiFi logs by timestamp
-                nifi_buffer_status_tool   # Check buffer status
+                search_nifi_logs_tool     # Core tool: Search NiFi logs by timestamp
             ]
         )
         
         logger.info("NiFi Agent created successfully")
         logger.info(f"Model: gemini-1.5-flash")
-        logger.info("Tools: 2 tools (NiFi buffer search and status)")
+        logger.info("Tools: 1 tool (NiFi buffer search only)")
         return nifi_agent
         
     except Exception as e:
