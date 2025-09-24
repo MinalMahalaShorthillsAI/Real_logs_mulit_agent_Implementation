@@ -14,6 +14,7 @@ from google.genai import types
 from prompts.analyser_prompt import analysis_prompt_template, enhanced_instruction
 from google.adk.tools.agent_tool import AgentTool
 from agent_2 import nifi_agent
+from agent_3 import remediation_runner
 
 load_dotenv()
 
@@ -35,51 +36,89 @@ def cleanup_and_exit():
 # Only handle Ctrl+C for clean exit
 signal.signal(signal.SIGINT, lambda s, f: cleanup_and_exit())
 
-def is_error_log(log_line):
-    """Check if a single log line is an error log that needs agent analysis"""
-    if not log_line or not log_line.strip():
-        return False
-    
-    error_levels = ['ERROR', 'WARN', 'WARNING', 'CRITICAL', 'FATAL']
-    is_error = any(level in log_line.upper() for level in error_levels)
-    
-    if is_error:
-        logger.info(f"🚨 Error log detected: {log_line[:50]}...")
-    else:
-        logger.info(f"ℹ️  Not an error log: {log_line[:50]}...")
-    
-    return is_error
 
 def stream_logs_line_by_line(log_file_path):
     """Stream logs line by line and yield only error logs for agent processing"""
     try:
-        logger.info(f"🔄 Starting line-by-line streaming from: {log_file_path}")
+        logger.info(f"Starting line-by-line streaming from: {log_file_path}")
         
         with open(log_file_path, 'r') as file:
             line_count = 0
-            error_count = 0
             
             for line in file:
                 line_count += 1
                 line = line.strip()
                 
-                if line and is_error_log(line):
-                    error_count += 1
-                    logger.debug(f"📨 Yielding error log #{error_count} (line {line_count}) to agent")
+                if line:
+                    logger.debug(f"Yielding (line {line_count}) to agent")
                     yield line
                 
                 # Add delay to see the 0.5 second gap in filtering
                 time.sleep(0.5)
                 
                 if line_count % 1000 == 0:
-                    logger.debug(f"📊 Streaming progress: {line_count} lines processed, {error_count} errors found")
+                    logger.debug(f"Streaming progress: {line_count} lines processed")
         
-        logger.info(f"✅ Streaming complete: {line_count} total lines, {error_count} error logs sent to agent")
+        logger.info(f"Streaming complete: {line_count} total lines")
         
     except FileNotFoundError:
-        logger.error(f"❌ File not found: {log_file_path}")
+        logger.error(f"File not found: {log_file_path}")
     except Exception as e:
-        logger.error(f"❌ Error during streaming: {e}")
+        logger.error(f"Error during streaming: {e}")
+
+async def call_remediation_agent(analysis_json, session_id=None):
+    """Explicitly call Agent 3 (Remediation Agent) with analysis results"""
+    try:
+        logger.info("🚨 Calling Remediation Agent for anomaly processing...")
+        
+        # Create session for remediation agent (using Agent 3's app_name)
+        remediation_session = await remediation_runner.session_service.create_session(
+            app_name="remediation_planning_hitl",
+            user_id="log_analyzer_to_remediation"
+        )
+        
+        # Prepare the analysis report for Agent 3
+        remediation_prompt = f"""
+Agent 1 has completed analysis and detected an ANOMALY requiring remediation planning.
+
+Analysis Report:
+{analysis_json}
+
+Please create a detailed remediation action plan with human-in-the-loop approval for this anomaly.
+"""
+        
+        content = types.Content(
+            parts=[types.Part.from_text(text=remediation_prompt)],
+            role="user"
+        )
+        
+        logger.info("Sending analysis to Remediation Agent...")
+        
+        # Call Agent 3
+        remediation_responses = []
+        async for event in remediation_runner.run_async(
+            user_id=remediation_session.user_id,
+            session_id=remediation_session.id,
+            new_message=content
+        ):
+            if event.is_final_response():
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if hasattr(part, 'text') and part.text:
+                            response_text = part.text
+                            remediation_responses.append(response_text)
+                            logger.info("✅ Remediation Agent response received")
+                            break
+                break
+        
+        if remediation_responses:
+            return "\n".join(remediation_responses)
+        else:
+            return "No response from Remediation Agent"
+            
+    except Exception as e:
+        logger.error(f"Failed to call Remediation Agent: {e}")
+        return f"Error calling Remediation Agent: {e}"
 
 def save_agent_interaction(log_index, log_entry, input_prompt, agent_output, session_id=None, output_dir="agent_outputs"):
     """Save agent interaction data"""
@@ -94,8 +133,9 @@ def save_agent_interaction(log_index, log_entry, input_prompt, agent_output, ses
         },
         "agent_configuration": {
             "name": "log_analysis_agent",
-            "model": "gemini-1.5-flash",
-            "tools_available": ["nifi_agent_tool"]
+            "model": "gemini-1.5-pro",
+            "tools_available": ["nifi_agent_tool"],
+            "sub_agents_available": ["remediation_planning_agent_hitl"]
         },
         "log_analysis": {
             "original_log_entry": log_entry,
@@ -114,21 +154,21 @@ def save_agent_interaction(log_index, log_entry, input_prompt, agent_output, ses
 
 async def process_log_file(log_file_path):
     """Process logs with real-time streaming - only error logs go to agent"""
-    logger.info(f"🚀 Starting real-time streaming processing from: {log_file_path}")
-    logger.info("🔄 Only ERROR logs will be sent to agent for analysis")
+    logger.info(f"Starting real-time streaming processing from: {log_file_path}")
+    logger.info("Only ERROR logs will be sent to agent for analysis")
     
     session = await agent_runner.session_service.create_session(
         app_name="log_analysis_agent", 
         user_id="log_analyzer"
     )
-    logger.info(f"✅ Created session: {session.id}")
+    logger.info(f"Created session: {session.id}")
     
     error_log_count = 0
     
     try:
         for log_entry in stream_logs_line_by_line(log_file_path):
             error_log_count += 1
-            logger.info(f"🚨 Processing ERROR log #{error_log_count}: {log_entry[:60]}...")
+            logger.info(f"Processing ERROR log #{error_log_count}: {log_entry[:60]}...")
             
             prompt = analysis_prompt_template.format(log_entry=log_entry)
             
@@ -138,9 +178,13 @@ async def process_log_file(log_file_path):
                     role="user"
                 )
                 
-                logger.info(f"📤 Calling Gemini agent for error log #{error_log_count}")
+                logger.info(f"Calling Gemini agent for error log #{error_log_count}")
                 
                 agent_output = "No response from agent"
+                all_responses = []
+                
+                response_count = 0
+                max_responses = 2
                 
                 async for event in agent_runner.run_async(
                     user_id=session.user_id, 
@@ -148,16 +192,44 @@ async def process_log_file(log_file_path):
                     new_message=content
                 ):
                     if event.is_final_response():
+                        response_count += 1
+                        logger.info(f"📨 Capturing response #{response_count}")
+                        
                         if event.content and event.content.parts:
                             for part in event.content.parts:
                                 if hasattr(part, 'text') and part.text:
-                                    agent_output = part.text
+                                    response_text = part.text
+                                    all_responses.append(response_text)
+                                    agent_output = response_text  # Update agent_output
+                                    
+                                    # Check for ANOMALY detection
+                                    if '"ANOMALY"' in response_text:
+                                        logger.info("🚨 ANOMALY detected - calling Remediation Agent")
+                                        
+                                        # Explicitly call Agent 3 for remediation
+                                        remediation_response = await call_remediation_agent(
+                                            analysis_json=response_text,
+                                            session_id=session.id
+                                        )
+                                        
+                                        # Combine responses
+                                        agent_output = f"{response_text}\n\n--- REMEDIATION AGENT RESPONSE ---\n{remediation_response}"
+                                        all_responses.append(remediation_response)
+                                        logger.info("✅ Agent 3 processing completed")
+                                    
                                     break
-                        if agent_output != "No response from agent":
+                        
+                        # Stop if we've captured enough responses or reached limit
+                        if response_count >= max_responses:
+                            logger.info(f"📋 Reached maximum responses ({max_responses}) - stopping capture")
                             break
                 
+                # Combine multiple responses if any
+                if len(all_responses) > 1:
+                    agent_output = "\n\n--- AGENT FLOW ---\n".join(all_responses)
+                    
             except Exception as e:
-                logger.error(f"❌ Failed to call Gemini agent: {e}")
+                logger.error(f"Failed to call Gemini agent: {e}")
                 agent_output = f"Error calling Gemini agent: {e}"
             
             save_agent_interaction(
@@ -169,17 +241,17 @@ async def process_log_file(log_file_path):
             )
             
             if error_log_count % 10 == 0:
-                logger.info(f"📊 Progress: {error_log_count} error logs processed")
+                logger.info(f"Progress: {error_log_count} error logs processed")
             
             time.sleep(0.5)
             
     except KeyboardInterrupt:
-        logger.warning("⚠️  Processing stopped by user")
+        logger.warning("Processing stopped by user")
     except Exception as e:
-        logger.error(f"❌ Error during processing: {e}")
+        logger.error(f"Error during processing: {e}")
     
-    logger.info(f"✅ Streaming processing complete - {error_log_count} error logs analyzed")
-    logger.info("💾 All interactions saved to agent_outputs/")
+    logger.info(f"Streaming processing complete - {error_log_count} error logs analyzed")
+    logger.info("All interactions saved to agent_outputs/")
 
 def create_log_analysis_agent():
     """Create and configure the Log Analysis Agent"""
@@ -199,13 +271,13 @@ def create_log_analysis_agent():
 
         agent = LlmAgent(
             name="log_analysis_agent",
-            description="Application log analysis agent that identifies anomalies and can correlate with NiFi pipeline issues",
+            description="Application log analysis agent that identifies anomalies, correlates with NiFi issues, and has remediation sub-agent for HITL planning",
             model=model,
             instruction=enhanced_instruction,
             tools=[nifi_agent_tool]
         )
         
-        logger.info("Log Analysis Agent created with NiFi correlation tool")
+        logger.info("Log Analysis Agent created with NiFi tool and remediation agent tool")
         
         return agent, InMemoryRunner(agent=agent, app_name="log_analysis_agent")
         

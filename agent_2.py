@@ -1,13 +1,11 @@
 import os
-import json
-import asyncio
 from loguru import logger
 from dotenv import load_dotenv
 from datetime import datetime
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.models import Gemini
 from google.adk.runners import InMemoryRunner
-from tools.nifi_buffer_tool import search_nifi_logs_tool
+from tools.log_tool import search_nifi_logs_tool
 from prompts.nifi_agent_prompt import nifi_agent_instruction
 
 # Load environment variables
