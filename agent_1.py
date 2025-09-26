@@ -7,7 +7,6 @@ from datetime import datetime
 from loguru import logger
 from dotenv import load_dotenv
 from google.adk.agents.llm_agent import LlmAgent
-from google.adk.models import Gemini
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 from prompts.analyser_prompt import analysis_prompt_template, enhanced_instruction
@@ -72,7 +71,7 @@ def save_agent_interaction(log_index, log_entry, input_prompt, agent_output, ses
         },
         "agent_configuration": {
             "name": "log_analysis_agent",
-            "model": "gemini-1.5-pro",
+            "model": "gemini-2.5-pro",
             "tools_available": ["nifi_agent_tool"],
             "sub_agents_available": ["remediation_agent"]
         },
@@ -199,14 +198,6 @@ async def process_log_file(log_file_path):
 def create_log_analysis_agent():
     """Create and configure the Log Analysis Agent"""
     try:
-        model = Gemini(
-            model_name="gemini-1.5-pro",
-            generation_config={
-                "temperature": 0,
-                "max_output_tokens": 8192,
-                "candidate_count": 1
-            }
-        )
         logger.info("Gemini model configured")
         
         nifi_agent_tool = AgentTool(agent=nifi_agent, skip_summarization=False)
@@ -218,7 +209,8 @@ def create_log_analysis_agent():
         agent = LlmAgent(
             name="log_analysis_agent",
             description="Application log analysis agent that identifies anomalies, correlates with NiFi application logs, and has remediation sub-agent for HITL planning",
-            model=model,
+            model="gemini-2.5-pro",
+            generate_content_config=types.GenerateContentConfig(temperature=0.1),
             instruction=enhanced_instruction,
             tools=[nifi_agent_tool],
             sub_agents=[remediation_agent]  # Remediation is a sub-agent, not a tool

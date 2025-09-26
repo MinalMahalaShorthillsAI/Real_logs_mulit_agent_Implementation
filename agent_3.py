@@ -8,6 +8,7 @@ from google.adk.runners import InMemoryRunner
 from prompts.remediation_agent_prompt import hitl_remediation_instruction
 from tools.remediation_hitl_tool import human_remediation_tool
 from tools.ssh_execution_tools import ssh_execution_tools
+from google.genai import types
 
 # Load environment variables
 load_dotenv()
@@ -40,14 +41,6 @@ def create_remediation_agent_with_hitl():
     try:
         logger.info("Creating Human-Interactive Remediation Agent...")
         
-        model = Gemini(
-            model_name="gemini-1.5-pro",  # Pro for better human interaction
-            generation_config={
-                "temperature": 0.3,  # Slightly more creative for alternatives
-                "max_output_tokens": 8192,  # More space for detailed explanations
-                "candidate_count": 1
-            }
-        )
         logger.info("Gemini Pro model configured for human-interactive remediation")
         
         # Human-interactive remediation planning agent WITH HITL and SSH execution tools
@@ -56,13 +49,14 @@ def create_remediation_agent_with_hitl():
         remediation_agent = LlmAgent(
             name="remediation_agent",
             description="Human-interactive remediation specialist with Human in the loop and SSH execution capabilities",
-            model=model,
+            model="gemini-2.5-pro",
+            generate_content_config=types.GenerateContentConfig(temperature=0.1),
             instruction=hitl_remediation_instruction,
             tools=all_tools  # HITL tool + SSH execution tools
         )
         
         logger.info("Remediation Agent created successfully")
-        logger.info(f"Model: gemini-1.5-pro (Human-Interactive)")
+        logger.info(f"Model: gemini-2.5-pro (Human-Interactive)")
         logger.info("Mode: Dry-run planning with human approval")
         logger.info(f"Tools: {len(all_tools)} tools (HITL + {len(ssh_execution_tools)} SSH execution tools)")
         return remediation_agent

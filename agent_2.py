@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.models import Gemini
+from google.genai import types
 from google.adk.runners import InMemoryRunner
 from tools.log_tool import search_nifi_logs_tool
 from prompts.nifi_agent_prompt import nifi_agent_instruction
@@ -38,22 +39,14 @@ def create_nifi_agent():
     """Create simple NiFi agent with only memory tools"""
     try:
         logger.info("Creating NiFi Agent...")
-        
-        model = Gemini(
-            model_name="gemini-1.5-flash",
-            generation_config={
-                "temperature": 0.1,
-                "max_output_tokens": 4096,
-                "candidate_count": 1
-            }
-        )
         logger.info("Gemini model configured for NiFi agent")
         
         # Simple NiFi analysis agent with minimal tools
         nifi_agent = LlmAgent(
             name="nifi_app_log_analyzer",
             description="Simple NiFi log analyzer focused on timestamp correlation",
-            model=model,
+            model="gemini-2.5-pro",
+            generate_content_config=types.GenerateContentConfig(temperature=0.1),
             instruction=nifi_agent_instruction,
             tools=[
                 search_nifi_logs_tool     # Core tool: Search NiFi logs by timestamp
@@ -61,7 +54,7 @@ def create_nifi_agent():
         )
         
         logger.info("NiFi Agent created successfully")
-        logger.info(f"Model: gemini-1.5-flash")
+        logger.info(f"Model: gemini-2.5-flash")
         logger.info("Tools: 1 tool (NiFi buffer search only)")
         return nifi_agent
         
