@@ -14,9 +14,7 @@ from google.adk.tools import FunctionTool
 SSH_CONFIG = {
     "VM-Nifi-dev-Node-03": {
         "host": "104.208.162.61",
-        "user": "nifi", 
-        "password": "123",
-        "sudo_password": "123",  # Add sudo password for privilege escalation
+        "user": "nifi"  # Add sudo password for privilege escalation
         "port": 22
     }
 }
