@@ -13,6 +13,7 @@ from prompts.analyser_prompt import analysis_prompt_template, enhanced_instructi
 from google.adk.tools.agent_tool import AgentTool
 from agent_2 import nifi_agent
 from agent_3 import remediation_agent
+from tools.local_command_tools import close_persistent_terminal, get_terminal_session_info
 
 
 load_dotenv()
@@ -171,7 +172,7 @@ async def process_log_file(log_file_path):
                 agent_output = f"Error calling multi-agent system: {e}"
                 
                 # Add a small delay before continuing to next log
-                time.sleep(2)
+                time.sleep(0.5)
             
             save_agent_interaction(
                 log_index=error_log_count, 
@@ -190,6 +191,14 @@ async def process_log_file(log_file_path):
         logger.warning("Processing stopped by user")
     except Exception as e:
         logger.error(f"Error during processing: {e}")
+    
+    finally:
+        # Check if terminal was used and close it
+        terminal_info = get_terminal_session_info()
+        if terminal_info["is_active"]:
+            logger.info(f"🖥️  Terminal was used during this session")
+            logger.info(f"📊 Total commands executed: {terminal_info['commands_executed']}")
+            close_persistent_terminal(f"Log file processing complete - {error_log_count} logs analyzed")
     
     logger.info(f"Streaming processing complete - {error_log_count} logs analyzed")
     logger.info("All interactions saved to agent_outputs/")

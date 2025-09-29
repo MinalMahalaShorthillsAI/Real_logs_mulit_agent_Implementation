@@ -7,7 +7,7 @@ from google.adk.models import Gemini
 from google.adk.runners import InMemoryRunner
 from prompts.remediation_agent_prompt import hitl_remediation_instruction
 from tools.remediation_hitl_tool import human_remediation_tool
-from tools.ssh_execution_tools import ssh_execution_tools
+from tools.local_command_tools import local_execution_tools
 from google.genai import types
 
 # Load environment variables
@@ -43,22 +43,22 @@ def create_remediation_agent_with_hitl():
         
         logger.info("Gemini Pro model configured for human-interactive remediation")
         
-        # Human-interactive remediation planning agent WITH HITL and SSH execution tools
-        all_tools = [human_remediation_tool] + ssh_execution_tools
+        # Human-interactive remediation planning agent WITH HITL and local execution tools
+        all_tools = [human_remediation_tool] + local_execution_tools
         
         remediation_agent = LlmAgent(
             name="remediation_agent",
-            description="Human-interactive remediation specialist with Human in the loop and SSH execution capabilities",
+            description="Human-interactive remediation specialist with Human in the loop and local command execution",
             model="gemini-2.5-pro",
             generate_content_config=types.GenerateContentConfig(temperature=0.1),
             instruction=hitl_remediation_instruction,
-            tools=all_tools  # HITL tool + SSH execution tools
+            tools=all_tools  # HITL tool + local execution tools
         )
         
         logger.info("Remediation Agent created successfully")
         logger.info(f"Model: gemini-2.5-pro (Human-Interactive)")
         logger.info("Mode: Dry-run planning with human approval")
-        logger.info(f"Tools: {len(all_tools)} tools (HITL + {len(ssh_execution_tools)} SSH execution tools)")
+        logger.info(f"Tools: {len(all_tools)} tools (HITL + {len(local_execution_tools)} local execution tools)")
         return remediation_agent
         
     except Exception as e:
