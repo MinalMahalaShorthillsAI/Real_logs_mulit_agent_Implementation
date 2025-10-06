@@ -1,45 +1,109 @@
 """
-Super Simple Human-in-the-Loop Tool for Agent 3
-Just shows Agent 3's plan and gets human approval - nothing else!
+Human-in-the-Loop Tool using polling pattern (like ADK HITL example)
+Polls a simple file for approval status - no new files needed!
 """
 
 from google.adk.tools import FunctionTool
 from loguru import logger
+import asyncio
+import time
+import uuid
+import json
+import os
+
+# In-memory storage for approvals (simple dict)
+_approvals = {}
 
 async def human_remediation_approval_tool(plan_text: str) -> str:
     """
-    Ultra-simple human approval tool.
-    Agent 3 provides the plan, human approves/rejects, that's it!
+    Present remediation plan and WAIT for human approval by polling a file.
+    Uses the ADK HITL pattern: create request, poll until approved/rejected.
+    
+    The user approves by editing the approval file or via web endpoint.
     
     Args:
-        plan_text: The complete remediation plan from Agent 3
+        plan_text: The complete remediation plan
         
     Returns:
-        str: Human decision (APPROVED/REJECTED)
+        str: "APPROVED" or "REJECTED" based on human decision
     """
-    logger.info("🤖➡️👤 Simple HITL Tool activated - Human approval required")
+    logger.info("🤖➡️👤 HITL Tool activated - Creating approval request")
     
-    # Display Agent 3's plan exactly as provided
-    print("\n" + "="*60)
-    print("🚨 HUMAN APPROVAL REQUIRED")
-    print("="*60)
-    print(plan_text)
-    print("="*60)
+    # Generate unique request ID
+    request_id = str(uuid.uuid4())[:8]
     
-    # Get simple human decision
-    decision = input("👤 Your decision (approve/reject): ").strip().lower()
+    # Store approval request
+    _approvals[request_id] = {
+        "plan": plan_text,
+        "status": "pending",
+        "created_at": time.time()
+    }
     
-    if decision.startswith('a'):
-        result = "APPROVED"
-    elif decision.startswith('r'):
-        result = "REJECTED"
-    else:
-        result = f"DECISION: {decision}"
+    # Save to file for web interface access
+    approval_file = f"agent_logs/approval_{request_id}.json"
+    os.makedirs("agent_logs", exist_ok=True)
+    with open(approval_file, 'w') as f:
+        json.dump(_approvals[request_id], f, indent=2)
     
-    logger.info(f"👤 Human decision: {result}")
-    return result
+    # Format message for user
+    approval_message = f"""
+============================================================
+🚨 HUMAN APPROVAL REQUIRED - Request ID: {request_id}
+============================================================
 
-# Create the simple HITL tool for Agent 3
+{plan_text}
+
+============================================================
+⏸️  WAITING FOR YOUR APPROVAL
+============================================================
+
+To approve, edit the file: {approval_file}
+Change "status": "pending" to "status": "approved" or "rejected"
+
+OR use curl:
+  curl -X POST http://localhost:8000/approve/{request_id}
+  curl -X POST http://localhost:8000/reject/{request_id}
+
+Polling every 5 seconds for your decision...
+"""
+    
+    logger.info(f"📋 Approval request: {request_id}")
+    logger.info(f"📁 Approval file: {approval_file}")
+    print(approval_message)
+    
+    # Poll for approval
+    start_time = time.time()
+    timeout = 300  # 5 minutes
+    poll_interval = 5  # 5 seconds
+    
+    while True:
+        # Check timeout
+        if time.time() - start_time > timeout:
+            logger.warning(f"⏱️  Request {request_id} TIMED OUT")
+            return "TIMEOUT: No response received"
+        
+        # Check file for status change
+        try:
+            if os.path.exists(approval_file):
+                with open(approval_file, 'r') as f:
+                    data = json.load(f)
+                    status = data.get("status", "pending")
+                    
+                    if status == "approved":
+                        logger.info(f"✅ Request {request_id} was APPROVED")
+                        return "APPROVED"
+                    elif status == "rejected":
+                        logger.info(f"❌ Request {request_id} was REJECTED")
+                        return "REJECTED"
+        except Exception as e:
+            logger.debug(f"Error reading approval file: {e}")
+        
+        # Wait before next poll
+        elapsed = int(time.time() - start_time)
+        logger.info(f"⏳ Still waiting for approval... ({elapsed}s elapsed)")
+        await asyncio.sleep(poll_interval)
+
+# Create the HITL tool
 human_remediation_tool = FunctionTool(func=human_remediation_approval_tool)
 human_remediation_tool.name = "human_remediation_approval_tool"
 

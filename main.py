@@ -500,3 +500,52 @@ if __name__ == "__main__":
         reload=True,
         log_level="info"
     )
+
+
+# ============================================================
+# HUMAN-IN-THE-LOOP APPROVAL ENDPOINTS (Simple file-based)
+# ============================================================
+
+@app.post("/approve/{request_id}")
+async def approve_request_endpoint(request_id: str):
+    """Approve an approval request by updating the file"""
+    import json
+    approval_file = f"agent_logs/approval_{request_id}.json"
+    
+    if not os.path.exists(approval_file):
+        raise HTTPException(status_code=404, detail=f"Request {request_id} not found")
+    
+    try:
+        with open(approval_file, 'r') as f:
+            data = json.load(f)
+        
+        data["status"] = "approved"
+        
+        with open(approval_file, 'w') as f:
+            json.dump(data, f, indent=2)
+        
+        return {"status": "success", "message": f"Request {request_id} approved"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/reject/{request_id}")
+async def reject_request_endpoint(request_id: str):
+    """Reject an approval request by updating the file"""
+    import json
+    approval_file = f"agent_logs/approval_{request_id}.json"
+    
+    if not os.path.exists(approval_file):
+        raise HTTPException(status_code=404, detail=f"Request {request_id} not found")
+    
+    try:
+        with open(approval_file, 'r') as f:
+            data = json.load(f)
+        
+        data["status"] = "rejected"
+        
+        with open(approval_file, 'w') as f:
+            json.dump(data, f, indent=2)
+        
+        return {"status": "success", "message": f"Request {request_id} rejected"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -17,7 +17,7 @@ def search_nifi_logs_by_timestamp(timestamp: str) -> dict:
     import os
     import glob
     
-    nifi_log_pattern = "logs/nifi_app/nifi-app_*.log"
+    nifi_log_pattern = "logs/nifi_app/nifi-app.log"
     nifi_files = glob.glob(nifi_log_pattern)
     
     if not nifi_files:

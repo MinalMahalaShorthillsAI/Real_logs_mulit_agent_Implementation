@@ -1,11 +1,14 @@
 .env
-/__pycache__/
 /venv/
-.__pycache__\
-/prompts/__pycache__/
-/tools/__pycache__/
 /agent_outputs/
 /agent_logs/
 /logs/
 ARCHITECTURE_DIAGRAM.md
 SOFTWARE_DESIGN_DOCUMENT.md
+
+# Python cache files - ignore ALL __pycache__ directories recursively
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
