@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional, List
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 import uvicorn
 from loguru import logger
@@ -23,7 +23,7 @@ SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
 PUBLIC_HOST = os.getenv("PUBLIC_HOST", None)  # Will auto-detect if not set in .env
 
 # Import your agents
-from agent_1 import agent_runner, process_log_file, stream_logs_line_by_line
+from agent_1 import agent_runner
 from google.genai import types
 
 def get_server_url():
@@ -130,88 +130,6 @@ async def health_check():
         timestamp=datetime.now().isoformat()
     )
 
-@app.post("/analyze/single-log", response_model=LogAnalysisResponse)
-async def analyze_single_log(request: LogAnalysisRequest):
-    """
-    Analyze a single log entry using the exact same multi-agent system as agent_1.py
-    Reuses the working process_log_file logic for single log entries
-    
-    - **log_entry**: The log line to analyze (will trigger full agent pipeline)
-    """
-    try:
-        logger.info(f"🔍 API: Full multi-agent analysis for: {request.log_entry[:100]}...")
-        
-        # Create a temporary single-line file to reuse existing process_log_file logic
-        import tempfile
-        import os
-        
-        # Create a temporary file with the single log entry
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.log', delete=False) as tmp_file:
-            tmp_file.write(request.log_entry)
-            tmp_file_path = tmp_file.name
-        
-        logger.info(f"🚀 Using proven process_log_file logic for full multi-agent pipeline")
-        
-        try:
-            # Use the existing working process_log_file function
-            await process_log_file(tmp_file_path)
-            
-            # Find the most recent output file to get results
-            import glob
-            output_files = glob.glob("agent_outputs/complete_log_*.json")
-            
-            if output_files:
-                # Get the most recent output file
-                latest_file = max(output_files, key=os.path.getctime)
-                
-                # Read the result
-                import json
-                with open(latest_file, 'r') as f:
-                    result_data = json.load(f)
-                
-                # Extract analysis from the result
-                agent_response = result_data.get('agent_output', 'Analysis completed')
-                session_id = result_data.get('session_id', 'temp_session')
-                
-                # Determine classification and triggers
-                classification = "ANOMALY" if '"ANOMALY"' in agent_response else "NORMAL"
-                nifi_correlation = "nifi" in agent_response.lower()
-                remediation_triggered = ("remediation" in agent_response.lower() or 
-                                       "human approval" in agent_response.lower() or
-                                       (classification == "ANOMALY" and " ERROR " in request.log_entry))
-                
-                logger.info(f"✅ Full analysis complete - Classification: {classification}, NiFi: {nifi_correlation}, Remediation: {remediation_triggered}")
-                
-                return LogAnalysisResponse(
-                    status="success",
-                    analysis=agent_response,
-                    session_id=session_id,
-                    timestamp=datetime.now().isoformat(),
-                    classification=classification,
-                    nifi_correlation=nifi_correlation,
-                    remediation_triggered=remediation_triggered
-                )
-            else:
-                # Fallback response if no output file found
-                return LogAnalysisResponse(
-                    status="success",
-                    analysis=f"Multi-agent analysis completed for: {request.log_entry}",
-                    session_id=f"api_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                    timestamp=datetime.now().isoformat(),
-                    classification="NORMAL",
-                    nifi_correlation=False,
-                    remediation_triggered=False
-                )
-                
-        finally:
-            # Clean up temporary file
-            if os.path.exists(tmp_file_path):
-                os.unlink(tmp_file_path)
-        
-    except Exception as e:
-        logger.error(f"❌ API Error in full multi-agent analysis: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Multi-agent analysis failed: {str(e)}")
-
 @app.post("/stream/analyze-file")
 async def stream_analyze_log_file(request: LogFileRequest):
     """
@@ -234,6 +152,8 @@ async def stream_analyze_log_file(request: LogFileRequest):
             from agent_1 import agent_runner, stream_logs_line_by_line, save_agent_interaction
             from prompts.analyser_prompt import analysis_prompt_template
             import time
+            
+            logger.info(f"🔍 Using agent_runner from agent_1 module")
             
             # Validate file exists
             if not os.path.exists(request.file_path):
@@ -266,6 +186,7 @@ async def stream_analyze_log_file(request: LogFileRequest):
                         yield f"data: {{'status': 'stopped', 'message': 'Stream stopped by user request'}}\n\n"
                         break
                     error_log_count += 1
+                    logger.info(f"📋 Processing log #{error_log_count}: {log_entry[:80]}...")
                     yield f"data: {{'status': 'processing', 'log_number': {error_log_count}, 'log_preview': '{log_entry[:60]}...'}}\n\n"
                     
                     # Use same prompt template as agent_1.py
@@ -277,6 +198,7 @@ async def stream_analyze_log_file(request: LogFileRequest):
                             role="user"
                         )
                         
+                        logger.info(f"🤖 Calling agent for log #{error_log_count}")
                         yield f"data: {{'status': 'agent_call', 'message': 'Calling multi-agent system for log #{error_log_count}'}}\n\n"
                         
                         agent_output = "No response from agent"
@@ -286,28 +208,41 @@ async def stream_analyze_log_file(request: LogFileRequest):
                         max_responses = 5  # Same as agent_1.py
                         
                         # Exact same agent runner call as agent_1.py
+                        logger.info(f"⏳ Waiting for agent response...")
+                        logger.info(f"🔍 Session: {session.id}, User: {session.user_id}")
+                        
+                        import asyncio
+                        event_count = 0
+                        
                         async for event in agent_runner.run_async(
                             user_id=session.user_id, 
                             session_id=session.id,
                             new_message=content
                         ):
+                            event_count += 1
+                            if event_count == 1:
+                                logger.info(f"✅ First event received from agent!")
+                            logger.debug(f"📨 Received event: {type(event).__name__}")
                             # Handle events exactly like agent_1.py
                             if hasattr(event, 'content') and event.content and event.content.parts:
                                 for part in event.content.parts:
                                     # Log function calls
                                     if hasattr(part, 'function_call') and part.function_call:
                                         tool_name = part.function_call.name
+                                        logger.info(f"🔧 Agent calling tool: {tool_name}")
                                         yield f"data: {{'status': 'tool_call', 'tool': '{tool_name}'}}\n\n"
                                         
                                     # Log function responses  
                                     elif hasattr(part, 'function_response') and part.function_response:
                                         tool_name = part.function_response.name
+                                        logger.info(f"✅ Tool response from: {tool_name}")
                                         yield f"data: {{'status': 'tool_response', 'tool': '{tool_name}'}}\n\n"
                                         if tool_name == "nifi_agent_tool":
                                             yield f"data: {{'status': 'nifi_correlation', 'message': 'NiFi correlation performed'}}\n\n"
                             
                             if event.is_final_response():
                                 response_count += 1
+                                logger.info(f"💬 Agent response #{response_count} received")
                                 yield f"data: {{'status': 'response', 'response_number': {response_count}}}\n\n"
                                 
                                 if event.content and event.content.parts:
@@ -325,9 +260,12 @@ async def stream_analyze_log_file(request: LogFileRequest):
                         # Combine responses exactly like agent_1.py
                         if len(all_responses) > 1:
                             agent_output = "\\n\\n--- AGENT FLOW ---\\n".join(all_responses)
+                        
+                        logger.info(f"✅ Agent processing complete for log #{error_log_count}")
                             
                     except Exception as e:
                         error_msg = f"Failed to call multi-agent system: {e}"
+                        logger.error(f"❌ Agent error: {e}")
                         yield f"data: {{'status': 'error', 'message': '{error_msg}'}}\n\n"
                         agent_output = f"Error calling multi-agent system: {e}"
                         time.sleep(2)
@@ -367,44 +305,92 @@ async def stream_analyze_log_file(request: LogFileRequest):
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
     )
 
-@app.post("/analyze/file", response_model=FileAnalysisResponse)
-async def analyze_log_file(request: LogFileRequest, background_tasks: BackgroundTasks):
+
+@app.post("/start-analysis")
+async def start_analysis_background(request: LogFileRequest):
     """
-    Analyze an entire log file using the multi-agent system
-    
-    - **file_path**: Path to the log file to analyze
-    
-    Note: This runs as a background task and returns immediately with a session ID.
-    Use the session ID to check status or get results.
+    Start log analysis in the background - returns immediately
+    Use this from Streamlit to avoid timeout issues
     """
-    try:
-        # Validate file exists
-        if not os.path.exists(request.file_path):
-            raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
+    import asyncio
+    from agent_1 import process_log_file
+    
+    def add_event(event_type, message):
+        """Add important event to status"""
+        # Special handling for log content
+        if event_type == "log":
+            analysis_status["current_log"] = message
+            return
         
-        logger.info(f"📁 API: Starting file analysis for: {request.file_path}")
+        # Update logs processed counter
+        if event_type == "processing":
+            analysis_status["logs_processed"] += 1
         
-        # Add background task for file processing
-        session_id = f"file_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        background_tasks.add_task(process_log_file, request.file_path)
+        # Log approval requests specially
+        if "approval" in message.lower() or "remediation" in message.lower():
+            logger.info(f"🔔 APPROVAL EVENT: {message}")
         
-        # Count total logs for estimation
+        analysis_status["agent_events"].append({
+            "type": event_type,
+            "message": message,
+            "time": datetime.now().strftime("%H:%M:%S")
+        })
+        # Keep only last 30 events
+        if len(analysis_status["agent_events"]) > 30:
+            analysis_status["agent_events"].pop(0)
+    
+    async def run_analysis():
+        """Run the analysis in background"""
+        global analysis_status
         try:
-            total_logs = sum(1 for _ in stream_logs_line_by_line(request.file_path))
-        except:
-            total_logs = 0
-        
-        return FileAnalysisResponse(
-            status="started",
-            message=f"File analysis started in background. Check agent_outputs/ for results.",
-            total_logs_processed=total_logs,
-            session_id=session_id,
-            start_time=datetime.now().isoformat()
-        )
-        
-    except Exception as e:
-        logger.error(f"❌ API Error starting file analysis: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"File analysis failed: {str(e)}")
+            analysis_status["is_running"] = True
+            analysis_status["logs_processed"] = 0
+            analysis_status["agent_events"] = []
+            analysis_status["current_activity"] = "🚀 Starting analysis..."
+            
+            add_event("start", f"Analysis started: {request.file_path}")
+            logger.info(f"🚀 Starting background analysis of: {request.file_path}")
+            
+            # Use the same process_log_file from agent_1.py with callback
+            from agent_1 import process_log_file
+            await process_log_file(request.file_path, status_callback=add_event)
+            
+            analysis_status["current_activity"] = "✅ Analysis complete!"
+            add_event("complete", "Analysis finished successfully")
+            logger.info(f"✅ Background analysis complete: {request.file_path}")
+            
+        except Exception as e:
+            analysis_status["current_activity"] = f"❌ Error: {str(e)}"
+            add_event("error", f"Analysis failed: {str(e)}")
+            logger.error(f"❌ Background analysis failed: {e}")
+        finally:
+            analysis_status["is_running"] = False
+    
+    # Create task in current event loop - it will run after response is sent
+    asyncio.create_task(run_analysis())
+    
+    return {
+        "status": "started",
+        "message": f"Analysis started for {request.file_path}",
+        "file_path": request.file_path,
+        "note": "Check FastAPI terminal for progress. Approval requests will appear in the dashboard."
+    }
+
+
+# Store analysis status in memory
+analysis_status = {
+    "is_running": False,
+    "logs_processed": 0,
+    "current_activity": "Idle",
+    "current_log": None,
+    "agent_events": []  # Keep important agent events only
+}
+
+@app.get("/analysis-status")
+async def get_analysis_status():
+    """Get current analysis status for real-time updates"""
+    return analysis_status
+
 
 @app.get("/analyze/file/results/{session_id}")
 async def get_file_analysis_results(session_id: str):
@@ -483,6 +469,102 @@ async def list_active_streams():
         "timestamp": datetime.now().isoformat()
     }
 
+# ============================================================
+# HUMAN-IN-THE-LOOP APPROVAL ENDPOINTS & DASHBOARD
+# ============================================================
+
+@app.get("/approvals/dashboard", response_class=HTMLResponse)
+async def approval_dashboard():
+    """Serve the approval dashboard HTML page"""
+    return """
+    <html>
+        <body>
+            <h1>Approval Dashboard</h1>
+            <p>Please use Streamlit dashboard instead:</p>
+            <code>streamlit run approval_dashboard.py</code>
+        </body>
+    </html>
+    """
+
+@app.get("/approvals/pending")
+async def list_pending_approvals():
+    """List all pending approval requests"""
+    from tools.remediation_hitl_tool import get_all_approval_requests
+    
+    all_requests = get_all_approval_requests()
+    pending = {k: v for k, v in all_requests.items() if v.get("status") == "pending"}
+    
+    # DEBUG: Log what we're returning
+    logger.info(f"🔍 /approvals/pending called - Total requests: {len(all_requests)}, Pending: {len(pending)}")
+    if pending:
+        logger.info(f"🔍 Pending request IDs: {list(pending.keys())}")
+    
+    return {
+        "pending_approvals": pending,
+        "count": len(pending),
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.post("/approve/{request_id}")
+async def approve_request_endpoint(request_id: str):
+    """Approve an approval request (in-memory, no files)"""
+    from tools.remediation_hitl_tool import update_approval_status
+    
+    success = update_approval_status(request_id, "approved")
+    
+    if success:
+        logger.info(f"✅ API: Request {request_id} approved")
+        return {
+            "status": "success",
+            "message": f"Request {request_id} approved",
+            "timestamp": datetime.now().isoformat()
+        }
+    else:
+        raise HTTPException(status_code=404, detail=f"Request {request_id} not found")
+
+@app.post("/reject/{request_id}")
+async def reject_request_endpoint(request_id: str, feedback: Optional[str] = None):
+    """Reject an approval request (in-memory, no files)"""
+    from tools.remediation_hitl_tool import update_approval_status
+    
+    success = update_approval_status(request_id, "rejected", feedback)
+    
+    if success:
+        if feedback:
+            logger.info(f"❌ API: Request {request_id} rejected with feedback: {feedback}")
+        else:
+            logger.info(f"❌ API: Request {request_id} rejected")
+        return {
+            "status": "success",
+            "message": f"Request {request_id} rejected",
+            "feedback": feedback,
+            "timestamp": datetime.now().isoformat()
+        }
+    else:
+        raise HTTPException(status_code=404, detail=f"Request {request_id} not found")
+
+@app.post("/feedback/{request_id}")
+async def send_feedback_endpoint(request_id: str, feedback: str):
+    """Send feedback for a request (rejects with feedback for agent to modify plan)"""
+    from tools.remediation_hitl_tool import update_approval_status
+    
+    if not feedback or not feedback.strip():
+        raise HTTPException(status_code=400, detail="Feedback cannot be empty")
+    
+    success = update_approval_status(request_id, "rejected", feedback.strip())
+    
+    if success:
+        logger.info(f"💬 API: Request {request_id} received feedback: {feedback}")
+        return {
+            "status": "success",
+            "message": f"Feedback sent for request {request_id}",
+            "feedback": feedback,
+            "action": "Agent will modify the plan based on your feedback",
+            "timestamp": datetime.now().isoformat()
+        }
+    else:
+        raise HTTPException(status_code=404, detail=f"Request {request_id} not found")
+
 # Configuration and startup
 if __name__ == "__main__":
    
@@ -500,52 +582,3 @@ if __name__ == "__main__":
         reload=True,
         log_level="info"
     )
-
-
-# ============================================================
-# HUMAN-IN-THE-LOOP APPROVAL ENDPOINTS (Simple file-based)
-# ============================================================
-
-@app.post("/approve/{request_id}")
-async def approve_request_endpoint(request_id: str):
-    """Approve an approval request by updating the file"""
-    import json
-    approval_file = f"agent_logs/approval_{request_id}.json"
-    
-    if not os.path.exists(approval_file):
-        raise HTTPException(status_code=404, detail=f"Request {request_id} not found")
-    
-    try:
-        with open(approval_file, 'r') as f:
-            data = json.load(f)
-        
-        data["status"] = "approved"
-        
-        with open(approval_file, 'w') as f:
-            json.dump(data, f, indent=2)
-        
-        return {"status": "success", "message": f"Request {request_id} approved"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/reject/{request_id}")
-async def reject_request_endpoint(request_id: str):
-    """Reject an approval request by updating the file"""
-    import json
-    approval_file = f"agent_logs/approval_{request_id}.json"
-    
-    if not os.path.exists(approval_file):
-        raise HTTPException(status_code=404, detail=f"Request {request_id} not found")
-    
-    try:
-        with open(approval_file, 'r') as f:
-            data = json.load(f)
-        
-        data["status"] = "rejected"
-        
-        with open(approval_file, 'w') as f:
-            json.dump(data, f, indent=2)
-        
-        return {"status": "success", "message": f"Request {request_id} rejected"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))

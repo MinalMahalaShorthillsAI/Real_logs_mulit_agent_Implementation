@@ -92,7 +92,7 @@ def save_agent_interaction(log_index, log_entry, input_prompt, agent_output, ses
         logger.error(f"Failed to save interaction for log {log_index}: {e}")
 
 
-async def process_log_file(log_file_path):
+async def process_log_file(log_file_path, status_callback=None):
     """Process ALL logs for analysis - remediation handled by sub-agent automatically"""
     logger.info(f"Starting real-time streaming processing from: {log_file_path}")
     logger.info("📊 ANALYZING: All log types (INFO/WARN/ERROR/DEBUG) will be analyzed")
@@ -104,12 +104,19 @@ async def process_log_file(log_file_path):
     )
     logger.info(f"Created session: {session.id}")
     
+    if status_callback:
+        status_callback("info", f"Session created: {session.id[:8]}...")
+    
     error_log_count = 0
     
     try:
         for log_entry in stream_logs_line_by_line(log_file_path):
             error_log_count += 1
             logger.info(f"Processing log #{error_log_count}: {log_entry[:60]}...")
+            
+            if status_callback:
+                status_callback("log", log_entry)  # Send the actual log content
+                status_callback("processing", f"Analyzing log #{error_log_count}")
             
             prompt = analysis_prompt_template.format(log_entry=log_entry)
             
