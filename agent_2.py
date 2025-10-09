@@ -45,7 +45,7 @@ def create_nifi_agent():
         nifi_agent = LlmAgent(
             name="nifi_app_log_analyzer",
             description="Simple NiFi log analyzer focused on timestamp correlation",
-            model="gemini-2.5-pro",
+            model="gemini-2.5-flash",
             generate_content_config=types.GenerateContentConfig(temperature=0.1),
             instruction=nifi_agent_instruction,
             tools=[

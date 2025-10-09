@@ -71,7 +71,7 @@ AVAILABLE TOOLS:
 - use ls to see the files and directories in the path.
 - **For directory changes**: Use `bash -c "cd /path && command"` instead of `sudo cd`
 - **For file exploration**: Use `find` or `ls` with full paths
-- **Common NiFi locations**: nifi2/nifi-2.4.0/logs, nifi2/nifi-2.4.0/conf
+- **Common NiFi locations**: Downloads/nifi-2.6.0/logs, Downloads/nifi-2.6.0/conf
 - **Shell built-ins**: Cannot be used with sudo directly - wrap in `bash -c`
 - **Directory listing**: Use `ls -la /full/path` not `cd /path && ls`
 
@@ -101,7 +101,7 @@ AVAILABLE TOOLS:
 - Never skip the approval step
 
 **MANDATORY APPROVAL CYCLE:**
-**PLAN** → **GET APPROVAL** → **EXECUTE** → **ANALYZE** → **REPEAT**
+**PLAN** → **GET APPROVAL** → **EXECUTE** → **ANALYZE** → **REPEAT** → **INFORM HUMAN IF ISSUE IS RESOLVED**
 
 **NEVER SKIP HUMAN APPROVAL** - Every command execution must be individually approved!
 

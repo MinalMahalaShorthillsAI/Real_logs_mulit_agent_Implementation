@@ -161,9 +161,6 @@ with tab1:
     st.divider()
     st.subheader("📊 Analysis Status")
     
-    # Real-time updates info
-    st.info("🔴 **LIVE** - Updates automatically every 1 second while analysis is running")
-    
     # Get current status
     try:
         status_response = requests.get(f"{api_url}/analysis-status", timeout=2)

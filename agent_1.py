@@ -2,7 +2,6 @@ import os
 import json
 import asyncio
 import glob
-import time
 from datetime import datetime
 from loguru import logger
 from dotenv import load_dotenv
@@ -45,8 +44,6 @@ def stream_logs_line_by_line(log_file_path):
                     logger.debug(f"Processing log (line {line_count}): {line[:80]}...")
                     yield line
                 
-                # Add delay to see the 0.5 second gap in filtering
-                time.sleep(0.3)
                 
                 if line_count % 1000 == 0:
                     logger.debug(f"Streaming progress: {line_count} lines processed")
@@ -144,17 +141,25 @@ async def process_log_file(log_file_path, status_callback=None):
                         for part in event.content.parts:
                             # Log function calls
                             if hasattr(part, 'function_call') and part.function_call:
-                                logger.info(f"🔧 Tool call: {part.function_call.name}")
+                                tool_name = part.function_call.name
+                                logger.info(f"🔧 Tool call: {tool_name}")
+                                if status_callback:
+                                    status_callback("tool_call", f"🔧 Tool call: {tool_name}")
                                 
                             # Log function responses  
                             elif hasattr(part, 'function_response') and part.function_response:
-                                logger.info(f"📋 Tool response: {part.function_response.name}")
-                                if part.function_response.name == "nifi_agent_tool":
+                                tool_name = part.function_response.name
+                                logger.info(f"📋 Tool response: {tool_name}")
+                                if status_callback:
+                                    status_callback("tool_response", f"📋 Tool response: {tool_name}")
+                                if tool_name == "nifi_agent_tool":
                                     logger.info(f"📊 NiFi tool response content: {str(part.function_response.response)[:200]}...")
                     
                     if event.is_final_response():
                         response_count += 1
                         logger.info(f"📨 Capturing response #{response_count}")
+                        if status_callback:
+                            status_callback("response", f"📨 Agent response #{response_count}")
                         
                         if event.content and event.content.parts:
                             for part in event.content.parts:
@@ -178,9 +183,7 @@ async def process_log_file(log_file_path, status_callback=None):
                 logger.error(f"Error occurred for log entry: {log_entry[:100]}...")
                 agent_output = f"Error calling multi-agent system: {e}"
                 
-                # Add a small delay before continuing to next log
-                time.sleep(0.5)
-            
+    
             save_agent_interaction(
                 log_index=error_log_count, 
                 log_entry=log_entry, 
@@ -192,7 +195,6 @@ async def process_log_file(log_file_path, status_callback=None):
             if error_log_count % 10 == 0:
                 logger.info(f"Progress: {error_log_count} logs processed")
             
-            time.sleep(0.5)
             
     except KeyboardInterrupt:
         logger.warning("Processing stopped by user")
@@ -225,7 +227,7 @@ def create_log_analysis_agent():
         agent = LlmAgent(
             name="log_analysis_agent",
             description="Application log analysis agent that identifies anomalies, correlates with NiFi application logs, and has remediation sub-agent for HITL planning",
-            model="gemini-2.5-pro",
+            model="gemini-2.5-flash",
             generate_content_config=types.GenerateContentConfig(temperature=0.1),
             instruction=enhanced_instruction,
             tools=[nifi_agent_tool],
