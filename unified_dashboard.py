@@ -369,14 +369,6 @@ with tab2:
                     st.markdown("**📋 Plan:**")
                     st.code(plan_content or "No plan details", language="text")
                     
-                    st.markdown("**⚠️ Risk Assessment:**")
-                    st.warning(f"Risk Level: {approval.get('risk', 'N/A')}")
-                    
-                    st.markdown("**🎯 Confidence:**")
-                    confidence = approval.get('confidence', 0)
-                    if confidence:
-                        st.metric("Confidence Score", f"{float(confidence) * 100:.0f}%")
-                
                 # Action buttons
                 col1, col2 = st.columns([1, 1])
                 with col1:

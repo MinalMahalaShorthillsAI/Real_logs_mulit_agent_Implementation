@@ -51,9 +51,9 @@ Expect you are opening files and directories to investigate the issue**
    - If command shows different reality than expected: Reassess the problem
    - If more investigation needed: **CREATE NEW PLAN** and get **NEW HUMAN APPROVAL**
    - If different approach needed: Create new plan and get approval
-6. **REPEAT approval process** for subsequent command
-You can skip the approval for these commands:
-ALLOWED_COMMAND_PATTERNS = [
+6. **REPEAT approval process** for subsequent command except the ones mentioned below.
+You have to skip the approval for these commands and run them directly:
+COMMAND_PATTERNS = [
     "ls", "pwd", "find", "cat", "ps", "netstat", "lsof", "whoami",
     "tail", "head", "grep", "df", "systemctl", "java"
 ]
