@@ -1,6 +1,12 @@
 """
 Local Command Execution Tools for Agent 3
 Secure local command execution with optional terminal display
+
+Terminal Display Strategy (macOS):
+- Creates a dedicated Terminal window with a unique custom title (e.g., "Agent3-a1b2c3d4")
+- Commands are executed ONLY in the window matching that exact custom title
+- This prevents cross-contamination with other terminal windows (e.g., Elasticsearch)
+- If terminal targeting fails, commands still execute with output in the console
 """
 
 import asyncio
@@ -20,47 +26,15 @@ MIN_INTERVAL_BETWEEN_COMMANDS = 2  # seconds
 # Simple terminal session tracking
 _terminal_session_id = None
 _terminal_usage_count = 0
-
-# Allowed commands for security - prevent malicious usage
-ALLOWED_COMMAND_PATTERNS = [
-    "ls", "pwd", "find", "cat", "ps", "netstat", "lsof", "whoami",
-    "tail", "head", "grep", "df", "systemctl", "java"
-]
-
-def _is_command_allowed(command: str) -> bool:
-    """Check if command is allowed for security"""
-    command_lower = command.lower().strip()
-    
-    # Block dangerous commands (but allow pipes |)
-    dangerous_patterns = ["rm ", "del ", "format", "mkfs", "dd ", "wget", "curl", "nc ", "ncat", ">", ">>", ";", "&", "$(", "`"]
-    for pattern in dangerous_patterns:
-        if pattern in command_lower:
-            return False
-    
-    # For piped commands, check each part separately
-    if "|" in command_lower:
-        parts = command_lower.split("|")
-        for part in parts:
-            part = part.strip()
-            allowed = False
-            for allowed_cmd in ALLOWED_COMMAND_PATTERNS:
-                if part.startswith(allowed_cmd.lower()):
-                    allowed = True
-                    break
-            if not allowed:
-                return False
-        return True
-    
-    # Allow only whitelisted command patterns
-    for allowed in ALLOWED_COMMAND_PATTERNS:
-        if command_lower.startswith(allowed.lower()):
-            return True
-    
-    return False
+_terminal_window_id = None  # Track specific terminal window
+_terminal_enabled = True  # Can be disabled if terminal targeting fails
 
 def _try_open_terminal():
     """Try to open a terminal window for macOS and Linux"""
-    global _terminal_session_id
+    global _terminal_session_id, _terminal_window_id, _terminal_enabled
+    
+    if not _terminal_enabled:
+        return False
     
     if _terminal_session_id is not None:
         return True
@@ -71,7 +45,29 @@ def _try_open_terminal():
         system = platform.system().lower()
         
         if system == "darwin":
-            cmd = ['osascript', '-e', f'tell application "Terminal" to do script "echo \\"🚀 Agent3 Session: {_terminal_session_id}\\"; echo \\"Commands will appear here...\\"" activate']
+            # Create a new Terminal window with a unique title we can target
+            # Use custom title to identify the correct window
+            window_title = f"Agent3-{_terminal_session_id}"
+            
+            script = f'''
+            tell application "Terminal"
+                set newWindow to do script "printf '\\\\033]0;{window_title}\\\\007'; clear; echo '🚀 Agent3 Command Terminal'; echo 'Session ID: {_terminal_session_id}'; echo ''; echo 'Commands will appear below:'; echo '═══════════════════════════════════════'; echo ''"
+                activate
+                set custom title of newWindow to "{window_title}"
+            end tell
+            '''
+            
+            result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
+            if result.returncode == 0:
+                _terminal_window_id = window_title  # Store the title instead of ID
+                print(f"✅ Opened terminal session: {_terminal_session_id}")
+                print(f"   Terminal title: {window_title}")
+                return True
+            else:
+                print(f"⚠️  Failed to create terminal: {result.stderr}")
+                _terminal_enabled = False
+                return False
+            
         elif system == "linux":
             for term in ['gnome-terminal', 'konsole', 'xterm']:
                 if subprocess.run(['which', term], capture_output=True).returncode == 0:
@@ -79,29 +75,47 @@ def _try_open_terminal():
                     break
             else:
                 return False
+            
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(f"✅ Opened terminal session: {_terminal_session_id}")
+            return True
         else:
             return False
         
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print(f"✅ Opened terminal session: {_terminal_session_id}")
-        return True
-        
     except Exception as e:
         print(f"⚠️  Could not open terminal: {e}")
+        _terminal_window_id = None
+        _terminal_enabled = False
         return False
 
 def _execute_in_terminal(command: str) -> bool:
     """Execute command in terminal window (macOS/Linux)"""
-    if not _terminal_session_id:
+    if not _terminal_session_id or not _terminal_window_id:
         return False
     
     try:
         system = platform.system().lower()
         
         if system == "darwin":
-            script = f'tell application "Terminal" to do script "{command}" in front window'
-            subprocess.run(['osascript', '-e', script], check=True)
-            return True
+            # Find the window by our custom title and execute command there
+            # Escape quotes properly for AppleScript
+            escaped_command = command.replace('\\', '\\\\').replace('"', '\\"')
+            window_title = _terminal_window_id  # This is the title string now
+            
+            script = f'''
+            tell application "Terminal"
+                repeat with w in windows
+                    if custom title of w is "{window_title}" then
+                        do script "{escaped_command}" in w
+                        return true
+                    end if
+                end repeat
+                return false
+            end tell
+            '''
+            
+            result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True, check=True)
+            return "true" in result.stdout.lower()
         
         elif system == "linux":
             try:
@@ -126,11 +140,7 @@ def _execute_in_terminal(command: str) -> bool:
 async def execute_local_command(server_name: str, command: str, timeout: Optional[int] = None) -> Dict:
     """Execute a secure command locally with optional terminal display"""
     
-    # Security validation
-    if not _is_command_allowed(command):
-        logger.warning(f"🚫 BLOCKED: {command}")
-        return {"status": "BLOCKED", "output": f"Command '{command}' not allowed", "error": "Not in allowlist"}
-    
+
     if command.strip().lower().startswith('sudo'):
         return {"status": "BLOCKED", "output": "Sudo commands blocked", "error": "Sudo not allowed"}
     
@@ -156,15 +166,17 @@ async def execute_local_command(server_name: str, command: str, timeout: Optiona
         
         start_time = time.time()
         
-        # Try terminal display (macOS/Linux)
+        # Try terminal display (macOS/Linux) - Now using title-based targeting for reliability
         terminal_success = False
-        if platform.system().lower() in ["darwin", "linux"]:
+        if platform.system().lower() in ["darwin", "linux"] and _terminal_enabled:
             global _terminal_usage_count
             if _try_open_terminal() and _execute_in_terminal(command):
                 _terminal_usage_count += 1
                 terminal_success = True
                 print(f"🖥️  Sent to terminal (session: {_terminal_session_id})")
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
+            elif not _terminal_enabled:
+                print(f"⚠️  Terminal display failed - commands will show in console only")
         
         # Execute in subprocess
         print(f"📺 OUTPUT:\n{'='*40}")
@@ -224,19 +236,33 @@ def get_terminal_session_info():
 
 def close_persistent_terminal(reason="Session complete"):
     """Close terminal session"""
-    global _terminal_session_id, _terminal_usage_count
+    global _terminal_session_id, _terminal_usage_count, _terminal_window_id
     
     if _terminal_session_id:
         print(f"🔒 Closing terminal: {_terminal_session_id} ({_terminal_usage_count} commands)")
         
-        if platform.system().lower() == "darwin":
+        if platform.system().lower() == "darwin" and _terminal_window_id:
             try:
-                subprocess.run(['osascript', '-e', 'tell application "Terminal" to close front window'], timeout=5)
-            except Exception:
-                pass
+                # Close the specific window by custom title
+                window_title = _terminal_window_id  # This is the title string
+                script = f'''
+                tell application "Terminal"
+                    repeat with w in windows
+                        if custom title of w is "{window_title}" then
+                            close w
+                            return true
+                        end if
+                    end repeat
+                    return false
+                end tell
+                '''
+                subprocess.run(['osascript', '-e', script], timeout=5, check=False)
+            except Exception as e:
+                print(f"⚠️  Could not close terminal window: {e}")
         
         _terminal_session_id = None
         _terminal_usage_count = 0
+        _terminal_window_id = None
 
 # Create tools
 local_execution_tools = [

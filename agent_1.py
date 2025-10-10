@@ -27,28 +27,53 @@ logger.add(sink=log_filename, format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} |
 logger.info(f"Logging session to file: {log_filename}")
 
 
-def stream_logs_line_by_line(log_file_path):
-    """Stream ALL logs line by line for agent analysis"""
+def stream_logs_by_timestamp(log_file_path):
+    """Stream complete log entries grouped by timestamp (handles multi-line logs like stack traces)"""
+    import re
+    
     try:
-        logger.info(f"Starting line-by-line streaming from: {log_file_path}")
+        logger.info(f"Starting timestamp-based log streaming from: {log_file_path}")
+        
+        # Common log timestamp patterns
+        # Matches patterns like: "2025-10-09 16:20:41,140" or "2025-10-09 16:20:41.140"
+        timestamp_pattern = re.compile(r'^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}[,\.]\d{3}')
         
         with open(log_file_path, 'r') as file:
+            current_log_entry = []
+            log_entry_count = 0
             line_count = 0
             
             for line in file:
                 line_count += 1
-                line = line.strip()
+                line = line.rstrip()  # Keep leading spaces but remove trailing
                 
-                # Yield ALL logs for analysis
-                if line:
-                    logger.debug(f"Processing log (line {line_count}): {line[:80]}...")
-                    yield line
-                
+                # Check if this line starts with a timestamp (new log entry)
+                if timestamp_pattern.match(line):
+                    # If we have a previous log entry, yield it
+                    if current_log_entry:
+                        complete_log = '\n'.join(current_log_entry)
+                        log_entry_count += 1
+                        logger.debug(f"Yielding log entry #{log_entry_count} ({len(current_log_entry)} lines): {current_log_entry[0][:80]}...")
+                        yield complete_log
+                    
+                    # Start new log entry
+                    current_log_entry = [line]
+                else:
+                    # This is a continuation line (stack trace, multi-line message, etc.)
+                    if current_log_entry and line:  # Only add non-empty continuation lines
+                        current_log_entry.append(line)
                 
                 if line_count % 1000 == 0:
-                    logger.debug(f"Streaming progress: {line_count} lines processed")
+                    logger.debug(f"Streaming progress: {line_count} lines processed, {log_entry_count} log entries yielded")
+            
+            # Yield the last log entry if exists
+            if current_log_entry:
+                complete_log = '\n'.join(current_log_entry)
+                log_entry_count += 1
+                logger.debug(f"Yielding final log entry #{log_entry_count}: {current_log_entry[0][:80]}...")
+                yield complete_log
         
-        logger.info(f"Streaming complete: {line_count} total lines")
+        logger.info(f"Streaming complete: {line_count} lines processed into {log_entry_count} complete log entries")
         
     except FileNotFoundError:
         logger.error(f"File not found: {log_file_path}")
@@ -107,9 +132,11 @@ async def process_log_file(log_file_path, status_callback=None):
     error_log_count = 0
     
     try:
-        for log_entry in stream_logs_line_by_line(log_file_path):
+        for log_entry in stream_logs_by_timestamp(log_file_path):
             error_log_count += 1
-            logger.info(f"Processing log #{error_log_count}: {log_entry[:60]}...")
+            # Show first line of log entry (timestamp line)
+            first_line = log_entry.split('\n')[0]
+            logger.info(f"Processing log #{error_log_count}: {first_line[:60]}...")
             
             if status_callback:
                 status_callback("log", log_entry)  # Send the actual log content
