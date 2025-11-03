@@ -7,15 +7,18 @@
 ## 📑 Table of Contents
 
 1. [System Overview](#system-overview)
-2. [Architecture & Design Patterns](#architecture--design-patterns)
-3. [Complete System Flow](#complete-system-flow)
-4. [Agent Details](#agent-details)
-5. [Tools & Capabilities](#tools--capabilities)
-6. [API Reference](#api-reference)
-7. [Dashboard Interface](#dashboard-interface)
-8. [Setup & Configuration](#setup--configuration)
-9. [Usage Examples](#usage-examples)
-10. [Security & Compliance](#security--compliance)
+2. [System Operating Modes](#system-operating-modes)
+3. [Architecture & Design Patterns](#architecture--design-patterns)
+4. [Complete System Flow](#complete-system-flow)
+5. [Agent Details](#agent-details)
+6. [Tools & Capabilities](#tools--capabilities)
+7. [API Reference](#api-reference)
+8. [Dashboard Interface](#dashboard-interface)
+9. [Setup & Configuration](#setup--configuration)
+10. [Usage Examples](#usage-examples)
+11. [NiFi-Specific Configuration](#nifi-specific-configuration)
+12. [Security & Compliance](#security--compliance)
+13. [Summary](#summary)
 
 ---
 
@@ -34,12 +37,91 @@ This is an **AI-powered multi-agent log analysis system** that:
 
 - **Three Specialized AI Agents** working together
 - **Real-time log streaming** and analysis
-- **Automatic NiFi correlation** for infrastructure errors
+- **Automatic NiFi correlation** for infrastructure errors (when available)
+- **Standalone mode** for projects without infrastructure logs
+- **Flexible operation modes** for testing and production
 - **Human-in-the-loop approval** for safe remediation
 - **RESTful API** for integration
 - **Streamlit Dashboard** for monitoring and approvals
 - **Enterprise security** with command whitelisting and rate limiting
+- **Session memory** for context-aware analysis across multiple logs
 - **Powered by Google Gemini 2.5** LLM
+
+---
+
+## 🔧 System Operating Modes
+
+The system supports flexible operating modes for different deployment scenarios and testing needs:
+
+### Agent 1 (Analyser) Modes
+
+**1. WITH NiFi Correlation Mode**
+- Activated when: `logs/nifi_app/nifi-app.log` exists AND Agent 2 loads successfully
+- Behavior: Calls `nifi_agent_tool` to correlate application errors with infrastructure logs
+- Use case: Production deployments with NiFi infrastructure
+- Output: Analysis includes actual NiFi correlation data
+
+**2. STANDALONE Mode**
+- Activated when: NiFi logs unavailable or Agent 2 fails to load
+- Behavior: Pure application log analysis without infrastructure correlation
+- Use case: Non-NiFi applications or testing without infrastructure logs
+- Output: Analysis with `"infrastructure_correlation": "N/A - No correlation source configured"`
+
+**Mode Detection**: Automatic - no configuration needed. Agent 1 detects availability at startup.
+
+### Agent 3 (Remediation) Modes
+
+**1. TEST MODE** (Default)
+- Activated when: `AGENT3_TEST_MODE=True` in .env (default)
+- Behavior: Quick acknowledgment and immediate exit
+- Use case: **Testing Agent 1's delegation logic** without full remediation overhead
+- Response: "✓ Remediation agent received delegation for [issue]. Test mode - exiting."
+- Tools: None
+- Duration: <1 second
+
+**2. PRODUCTION MODE**
+- Activated when: `AGENT3_TEST_MODE=False` in .env
+- Behavior: Full HITL remediation workflow
+- Use case: **Production deployments** requiring actual error resolution
+- Response: Complete remediation cycle with human approval
+- Tools: Human approval tool + local command execution tools
+- Duration: Until issue resolved and tested
+
+**Configuration**: Set `AGENT3_TEST_MODE` environment variable in `.env` file
+
+### Recommended Testing Workflow
+
+**Phase 1: Agent 1 Testing** (AGENT3_TEST_MODE=True)
+```bash
+# .env configuration
+AGENT3_TEST_MODE=True
+```
+- Validate log parsing and streaming
+- Test Agent 1's analysis accuracy
+- Verify remediation trigger conditions (ERROR + ANOMALY)
+- Confirm Agent 3 delegation occurs correctly
+- Fast iteration without waiting for human approvals
+
+**Phase 2: Integration Testing** (AGENT3_TEST_MODE=False)
+```bash
+# .env configuration
+AGENT3_TEST_MODE=False
+```
+- Test complete HITL workflow
+- Validate human approval system
+- Test command execution and terminal display
+- Verify remediation loops and issue resolution
+- Test session memory and context awareness
+
+**Phase 3: Production Deployment** (AGENT3_TEST_MODE=False)
+```bash
+# .env configuration
+AGENT3_TEST_MODE=False
+```
+- Monitor real application logs
+- Handle actual error remediation with human oversight
+- Track remediation success rates
+- Build knowledge base from successful resolutions
 
 ---
 
@@ -318,21 +400,47 @@ START: Log File Processing
 
 **Temperature**: `0.1` (Deterministic with slight creativity)
 
+**Operating Modes**:
+1. **WITH NiFi Correlation**: When `logs/nifi_app/nifi-app.log` exists and Agent 2 loads successfully
+2. **STANDALONE Mode**: When NiFi logs are unavailable - pure log analysis without infrastructure correlation
+
+**Automatic Mode Detection**:
+```python
+# Agent 1 automatically detects NiFi log availability
+nifi_log_path = "logs/nifi_app/nifi-app.log"
+if os.path.exists(nifi_log_path):
+    # Load Agent 2 as tool → CORRELATION MODE
+    CORRELATION_MODE = True
+else:
+    # No NiFi correlation → STANDALONE MODE
+    CORRELATION_MODE = False
+```
+
 **Key Responsibilities**:
 1. Receive and process log entries
-2. Call NiFi Agent Tool
-3. Perform root cause analysis
+2. Call NiFi Agent Tool (CORRELATION MODE only)
+3. Perform root cause analysis with session memory
 4. Classify logs as NORMAL or ANOMALY
 5. Determine severity levels
 6. Trigger remediation sub-agent when needed
+7. Maintain context awareness across logs in the session
 
 **Tools Available**:
-- `nifi_agent_tool` - Correlate with NiFi infrastructure logs
+- `nifi_agent_tool` - Correlate with NiFi infrastructure logs (CORRELATION MODE only)
+- No tools in STANDALONE MODE
 
 **Sub-Agents**:
 - `remediation_agent` - Automatic delegation for ERROR + ANOMALY
 
+**Context Awareness**:
+- Session state tracking across multiple log entries
+- Historical pattern detection from previous analyses
+- Cumulative understanding of system issues
+- Reference to earlier anomalies and correlations
+
 **Output Format** (JSON):
+
+*CORRELATION MODE:*
 ```json
 {
   "application": "Application name",
@@ -345,6 +453,19 @@ START: Log File Processing
 }
 ```
 
+*STANDALONE MODE:*
+```json
+{
+  "application": "Application name",
+  "classification": "NORMAL | ANOMALY",
+  "severity": "LOW | MEDIUM | HIGH | CRITICAL",
+  "component": "Component that failed",
+  "likely_cause": "Root cause based on analysis",
+  "infrastructure_correlation": "N/A - No correlation source configured",
+  "recommendation": "Action plan based on analysis"
+}
+```
+
 **Triggering Logic**:
 ```python
 if " ERROR " in log_entry and classification == "ANOMALY":
@@ -354,6 +475,8 @@ if " ERROR " in log_entry and classification == "ANOMALY":
 
 **Session Management**:
 - Creates InMemoryRunner session for context
+- Tracks execution metadata (tool calls, response times, sub-agent triggers)
+- Captures multiple responses for complete flow visibility
 
 ---
 
@@ -416,24 +539,57 @@ main_agent = LlmAgent(tools=[nifi_agent_tool])
 
 **Temperature**: `0.1` (Consistent remediation plans)
 
-**Key Responsibilities**:
+**Operating Modes**:
+1. **TEST MODE** (Default): Quick acknowledgment for Agent 1 validation - exits immediately without remediation
+2. **PRODUCTION MODE**: Full remediation workflow with human approval and execution
+
+**Mode Configuration**:
+```python
+# Via environment variable
+TEST_MODE = os.getenv("AGENT3_TEST_MODE", "True").lower() == "true"
+
+# TEST_MODE = True  → Quick exit for testing Agent 1
+# TEST_MODE = False → Full HITL remediation workflow
+```
+
+**TEST MODE Behavior** (For Agent 1 Testing):
+- Receives delegation from Agent 1
+- Acknowledges error type in 1 sentence
+- Exits immediately without tools or remediation
+- Response format: "✓ Remediation agent received delegation for [issue type]. Would normally investigate and create remediation plan. Test mode - exiting."
+- Purpose: Validate Agent 1's delegation logic without full remediation overhead
+
+**PRODUCTION MODE Responsibilities**:
 1. Receive error analysis from Agent 1
-2. Create remediation plans with confidence scores
-3. **MANDATORY**: Get human approval before execution
-4. Execute approved commands locally
-5. Analyze execution results
-6. Create follow-up plans if needed
-7. Test resolution thoroughly
-8. Report success to human
+2. Check session memory for similar past issues
+3. Create remediation plans with confidence scores
+4. **MANDATORY**: Get human approval before dangerous commands
+5. Execute approved commands locally
+6. Analyze execution results based on ACTUAL output only
+7. Create follow-up plans if needed
+8. Test resolution thoroughly and autonomously
+9. Report success to human operator
 
 **Tools Available**:
+
+*TEST MODE:*
+- No tools (quick exit)
+
+*PRODUCTION MODE:*
 - `human_remediation_approval_tool` - HITL approval system
 - `execute_local_command` - Run commands on NiFi server
 - `check_local_system` - Test system availability
 
 **Workflow Pattern**:
+
+*TEST MODE:*
 ```
-PLAN → GET APPROVAL → EXECUTE → ANALYZE → REPEAT
+RECEIVE → ACKNOWLEDGE → EXIT
+```
+
+*PRODUCTION MODE:*
+```
+PLAN → GET APPROVAL → EXECUTE → ANALYZE ACTUAL RESULTS → TEST → REPEAT UNTIL RESOLVED
 ```
 
 **Confidence Scoring**:
@@ -448,18 +604,43 @@ PLAN → GET APPROVAL → EXECUTE → ANALYZE → REPEAT
 - `REJECTED` → Create **completely different** alternative
 - `REJECTED_WITH_FEEDBACK` → Modify plan based on human input
 
-**Safety Features**:
-- No `sudo` commands allowed
-- Rate limiting (2s between commands)
-- Command whitelisting for safe operations
-- Each command requires separate approval
-- Terminal window for visual feedback
+**Session Memory & Context** (PRODUCTION MODE):
+- Agent 3 maintains conversation history from current session
+- References similar errors fixed earlier in the session
+- Learns from previous successful/failed remediation attempts
+- Explicitly mentions: "I fixed a similar [error type] [X] logs ago"
+- Adapts approach based on historical patterns
 
-**Allowed Commands** (Skip approval):
+**Safety Features**:
+- No `sudo` commands allowed (blocked at execution level)
+- Rate limiting (0.5s between commands - optimized for responsiveness)
+- Safe commands execute without approval overhead
+- Dangerous commands require individual human approval
+- Terminal window for visual feedback with unique session tracking
+- Commands analyzed ONLY on actual output (no assumptions)
+
+**Command Approval Strategy** (PRODUCTION MODE):
+
+*Commands that SKIP approval (safe read-only operations):*
 ```python
 ["ls", "pwd", "find", "cat", "ps", "netstat", "lsof", 
  "whoami", "tail", "head", "grep", "df", "systemctl", "java"]
 ```
+
+*Commands that REQUIRE approval (modify system state):*
+- Any `pip install` or package management
+- File modifications, deletions
+- Service restarts
+- Configuration changes
+- Any command not in the safe list above
+
+**Critical Execution Rules** (PRODUCTION MODE):
+- Agent MUST fully resolve the issue - no partial fixes
+- Agent MUST test the resolution autonomously
+- Agent analyzes results based ONLY on actual command output
+- If command returns empty/no output → Accept that reality, reassess
+- Never assume results that weren't actually returned
+- Inform human operator ONLY when issue is fully resolved and tested
 ---
 
 ## 🛠️ Tools & Capabilities
@@ -547,8 +728,10 @@ _approval_requests = {
 **Functions**:
 1. `execute_local_command(server_name, command, timeout)`
 2. `check_local_system(server_name)`
+3. `get_terminal_session_info()` - Get current terminal session details
+4. `close_persistent_terminal(reason)` - Close terminal session
 
-**Purpose**: Secure local command execution with terminal display
+**Purpose**: Secure local command execution with reliable terminal display
 
 **Security Features**:
 
@@ -558,10 +741,10 @@ if command.startswith('sudo'):
     return {"status": "BLOCKED", "error": "Sudo not allowed"}
 ```
 
-2. **Rate Limiting**:
+2. **Rate Limiting** (Optimized):
 ```python
-MIN_INTERVAL_BETWEEN_COMMANDS = 2  # seconds
-# Enforces 2-second gap between commands
+MIN_INTERVAL_BETWEEN_COMMANDS = 0.5  # seconds (reduced from 2s)
+# Enforces 0.5-second gap between commands for better responsiveness
 ```
 
 3. **Concurrent Execution Control**:
@@ -570,22 +753,61 @@ _active_executions: Set[str] = set()
 # Only one command per server at a time
 ```
 
-**Terminal Display** (macOS/Linux):
-- Opens a dedicated terminal window
-- All commands executed visibly
-- Tracks session with unique ID
-- Auto-closes when done
+**Terminal Display** (macOS/Linux) - Enhanced Reliability:
+
+*macOS Terminal Targeting Strategy:*
+- Creates terminal window with **custom title**: `Agent3-{session_id}`
+- Uses custom title for precise window identification
+- Prevents cross-contamination with other terminal windows
+- Executes commands ONLY in the window matching exact custom title
+- Graceful fallback to console-only if terminal targeting fails
+
+*Terminal Features:*
+```python
+# Session tracking
+_terminal_session_id = "abc12345"  # Unique 8-char ID
+_terminal_window_id = "Agent3-abc12345"  # Custom title for targeting
+
+# Terminal enabled/disabled flag
+_terminal_enabled = True  # Auto-disables if targeting fails
+
+# AppleScript window targeting (macOS)
+tell application "Terminal"
+    repeat with w in windows
+        if custom title of w is "Agent3-abc12345" then
+            do script "{command}" in w
+        end if
+    end repeat
+end tell
+```
+
+*Linux Terminal Support:*
+- Supports `gnome-terminal`, `konsole`, `xterm`
+- Uses `xdotool` for window targeting (if available)
 
 **Execution Flow**:
 ```
 1. Validate command (no sudo)
-2. Check rate limit (2s gap)
+2. Check rate limit (0.5s gap - optimized)
 3. Check concurrent execution
-4. Open terminal window (if first command)
-5. Display command in terminal
-6. Execute via subprocess
-7. Capture stdout/stderr
-8. Return structured result
+4. Open terminal window (if first command) with custom title
+5. Target correct window by custom title (reliable)
+6. Display command in terminal (if targeting succeeds)
+7. Execute via subprocess (always)
+8. Capture stdout/stderr
+9. Display in console + terminal (dual output)
+10. Return structured result
+```
+
+**Terminal Session Management**:
+```python
+# Get session info
+terminal_info = get_terminal_session_info()
+# Returns: {"session_id": "abc123", "commands_executed": 5, "is_active": True}
+
+# Close terminal when done
+close_persistent_terminal("Session complete")
+# Closes the specific terminal window by custom title
 ```
 
 **Return Format**:
@@ -916,7 +1138,22 @@ PUBLIC_HOST=localhost  # or your server IP/hostname
 
 # Streamlit Configuration
 API_BASE_URL=http://localhost:8000
+
+# Agent 3 Operation Mode
+AGENT3_TEST_MODE=True   # True: Quick exit for Agent 1 testing
+                        # False: Full remediation with HITL workflow
 ```
+
+**Environment Variable Details**:
+
+- `GOOGLE_API_KEY`: Your Google Gemini API key (required)
+- `SERVER_HOST`: FastAPI server bind address (default: 0.0.0.0)
+- `SERVER_PORT`: FastAPI server port (default: 8000)
+- `PUBLIC_HOST`: Public hostname for API URLs (default: localhost)
+- `API_BASE_URL`: Streamlit dashboard API endpoint (default: http://localhost:8000)
+- `AGENT3_TEST_MODE`: Controls Agent 3 behavior
+  - `True` (default): Agent 3 exits quickly after acknowledgment - useful for testing Agent 1's delegation logic
+  - `False`: Full remediation workflow with human approval and command execution
 
 #### Get Gemini API Key:
 1. Go to: https://makersuite.google.com/app/apikey
@@ -965,57 +1202,267 @@ Real_logs_mulit_agent_Implementation/
 
 ## 📖 Usage Examples
 
-### Example 1: Analyze Single Log File (CLI)
+### Example 1: Quick Testing (Agent 1 Only - Test Mode)
+
+**Setup**: Ensure `AGENT3_TEST_MODE=True` in `.env` (default)
 
 ```bash
 # Edit agent_1.py to set your log file path
-# Line 282-283:
+# Line 398:
 log_folder_path = "/path/to/your/logs"
 
 # Run
 python agent_1.py
 ```
 
-**Process**:
-1. Streams logs one by one
-2. Each log analyzed by Agent 1
-3. NiFi correlation performed automatically
-4. ERROR + ANOMALY triggers remediation
-5. Approvals appear in terminal
+**What Happens**:
+1. Streams logs one by one from folder
+2. Agent 1 analyzes each log
+3. NiFi correlation performed automatically (if available)
+4. ERROR + ANOMALY triggers Agent 3 delegation
+5. Agent 3 **quickly acknowledges and exits** (test mode)
 6. Results saved to `agent_outputs/`
+
+**Use Case**: Rapid iteration when testing Agent 1's analysis and delegation logic
+
+**Output Example**:
+```
+Processing log #5: 2025-10-09 16:20:41 ERROR...
+🔧 Tool call: nifi_agent_tool
+📨 Agent response #1: [Agent 1 analysis JSON]
+📨 Agent response #2: ✓ Remediation agent received delegation for database connection error. Test mode - exiting.
+✅ Completed in 2.3s
+```
 
 ---
 
-### Example 2: Analyze via Dashboard
+### Example 2: Production Remediation (Full HITL Workflow)
+
+**Setup**: Set `AGENT3_TEST_MODE=False` in `.env`
+
+```bash
+# .env file
+AGENT3_TEST_MODE=False
+
+# Run
+python agent_1.py
+```
+
+**What Happens**:
+1. Streams logs one by one
+2. Agent 1 analyzes each log with NiFi correlation
+3. ERROR + ANOMALY triggers Agent 3
+4. Agent 3 creates remediation plan
+5. **Human approval requested** in terminal
+6. After approval, commands executed
+7. Agent 3 tests resolution autonomously
+8. Results saved to `agent_outputs/`
+
+**Approval Process**:
+```
+🚨 HUMAN APPROVAL REQUIRED
+Request ID: req_abc123
+================================
+UNDERSTANDING: Python module missing
+PLAN: pip install requests
+RISK: LOW - Safe package installation
+CONFIDENCE: 0.95
+
+To approve (in another terminal):
+curl -X POST http://localhost:8000/approve/req_abc123
+```
+
+---
+
+### Example 3: Analyze via Dashboard (Interactive)
+
+**Setup**: Configure mode in `.env` before starting
 
 1. **Start Services**:
    ```bash
-   # Terminal 1
+   # Terminal 1 - API Server
    python main.py
    
-   # Terminal 2
+   # Terminal 2 - Dashboard
    streamlit run unified_dashboard.py
    ```
 
 2. **Open Dashboard**: http://localhost:8501
 
-3. **Start Analysis**:
+3. **Configure Mode** (if needed):
+   - Stop services
+   - Edit `.env`: Set `AGENT3_TEST_MODE=True` or `False`
+   - Restart services
+
+4. **Start Analysis**:
    - Tab: "🚀 Trigger Analysis"
    - Select file: `logs/HR_logs (1).log`
    - Click: "🚀 Start Stream Analysis"
 
-4. **Monitor Progress**:
+5. **Monitor Progress**:
    - Watch "📊 Analysis Status" panel
    - Real-time logs processed count
    - Current log being analyzed
    - Agent activity stream
+   - Tool calls and responses
 
-5. **Handle Approvals**:
+6. **Handle Approvals** (Production Mode Only):
    - Tab: "✅ Approve Plans"
    - Click "🔄 Refresh Now"
-   - Review remediation plan
+   - Review remediation plan with confidence score
    - Click "✅ Approve" or "❌ Reject"
+   - Optionally: Provide feedback for plan modification
 
-6. **Check Results**:
+7. **Check Results**:
    - Files saved in `agent_outputs/`
-   - Terminal shows execution details
+   - Terminal shows command execution details
+   - Session memory preserved across log entries
+
+---
+
+### Example 4: Standalone Mode (No NiFi Correlation)
+
+**Scenario**: Analyzing application logs without NiFi infrastructure
+
+**Setup**:
+- Ensure NO file at `logs/nifi_app/nifi-app.log`
+- Agent 1 will automatically enter STANDALONE mode
+
+```bash
+# Agent 1 detects no NiFi logs and switches to standalone
+python agent_1.py
+```
+
+**Console Output**:
+```
+✗ NiFi correlation DISABLED (no logs at logs/nifi_app/nifi-app.log)
+Log Analysis Agent created in STANDALONE (no correlation) mode
+```
+
+**Analysis Output**:
+```json
+{
+  "application": "MyApp",
+  "classification": "ANOMALY",
+  "severity": "HIGH",
+  "component": "DatabaseService",
+  "likely_cause": "Connection pool exhausted",
+  "infrastructure_correlation": "N/A - No correlation source configured",
+  "recommendation": "Increase pool size or investigate connection leaks"
+}
+```
+
+**Use Case**: Non-NiFi applications, testing without infrastructure logs, or when NiFi logs unavailable
+
+---
+
+## 🎯 NiFi-Specific Configuration
+
+**For NiFi Deployments**: Agent 3 (in production mode) has pre-configured knowledge of common NiFi installation paths:
+
+**Default NiFi Paths**:
+```
+/Users/shtlpmac071/Downloads/nifi-2.6.0/                    # NiFi installation root
+/Users/shtlpmac071/Downloads/nifi-2.6.0/HR_BOT/             # Application directory
+/Users/shtlpmac071/Downloads/nifi-2.6.0/HR_BOT/llm_usage.log # Error log file
+/Users/shtlpmac071/Downloads/nifi-2.6.0/conf/nifi.properties # Configuration
+```
+
+**Customization**: Update these paths in `prompts/remediation_agent_prompt.py` (line 111) to match your NiFi installation.
+
+**Log Location Discovery**:
+Agent 3 knows to look for application error logs at the configured path and will:
+1. Read the error log file for detailed stack traces
+2. Analyze the complete error context
+3. Test resolution by re-running the problematic file/script
+4. Verify fixes by checking the log file again
+
+---
+
+## 🔐 Security & Compliance
+
+### Security Features
+
+**1. Command Execution Security**
+- **Sudo Blocking**: All `sudo` commands are blocked at execution level
+- **Command Whitelisting**: Safe read-only commands execute without approval
+- **Approval Required**: Dangerous commands require explicit human approval
+- **No Batch Execution**: Each command requires individual approval
+- **Rate Limiting**: 0.5s minimum interval between commands
+
+**2. Isolation & Sandboxing**
+- **Session Isolation**: Each analysis runs in isolated ADK session
+- **Terminal Isolation**: Commands execute in dedicated terminal window with unique ID
+- **No Cross-Contamination**: Custom title-based targeting prevents interference
+
+**3. Audit Trail**
+- **Complete Logging**: All interactions logged to `agent_logs/`
+- **Human Interactions**: Special logging for all HITL decisions
+- **Execution Metadata**: Tool calls, response times, command outputs tracked
+- **JSON Output**: Complete analysis and remediation saved to `agent_outputs/`
+
+**4. Network Security**
+- **Local Execution Only**: Commands run on local system only
+- **No Remote SSH**: No SSH connections to remote servers
+- **API Authentication**: Can be extended with API keys (not implemented by default)
+
+### Compliance Considerations
+
+**Data Privacy**:
+- All log analysis happens locally
+- No data sent to external services except Gemini API for LLM inference
+- Logs and outputs stored locally in filesystem
+- Session data ephemeral (in-memory only during execution)
+
+**Operational Safety**:
+- Human approval required for all system-modifying operations
+- Clear confidence scoring for remediation plans
+- Ability to reject or modify plans before execution
+- Test mode available for validation without side effects
+
+**Audit Requirements**:
+```
+agent_logs/                           # Timestamped session logs
+  - agent_session_YYYYMMDD_HHMMSS.txt
+  - remediation_agent_session_YYYYMMDD_HHMMSS.txt
+  - human_interactions_YYYYMMDD.json
+
+agent_outputs/                        # Complete interaction records
+  - complete_log_00001_YYYYMMDD_HHMMSS.json
+  - complete_log_00002_YYYYMMDD_HHMMSS.json
+```
+
+---
+
+## 📋 Summary
+
+This multi-agent log analysis system provides:
+
+✅ **Intelligent Analysis**: AI-powered log analysis with session memory and pattern detection  
+✅ **Infrastructure Correlation**: Automatic NiFi log correlation (when available)  
+✅ **Flexible Deployment**: Standalone mode for non-NiFi applications  
+✅ **Safe Remediation**: Human-in-the-loop approval for system changes  
+✅ **Testing Support**: Test mode for rapid development and validation  
+✅ **Enterprise Ready**: Security controls, audit trails, and compliance features  
+✅ **Real-time Monitoring**: Dashboard and API for operational visibility  
+✅ **Context Awareness**: Session memory for cumulative system understanding  
+
+**Best For**:
+- NiFi-based data pipeline monitoring and auto-remediation
+- Application log analysis with infrastructure correlation
+- Human-supervised automated troubleshooting
+- Continuous log monitoring with anomaly detection
+- Building operational knowledge bases from successful fixes
+
+**Get Started**:
+1. Install dependencies: `pip install -r requirements.txt`
+2. Configure `.env` with Gemini API key
+3. Set `AGENT3_TEST_MODE=True` for initial testing
+4. Run `python agent_1.py` to process logs
+5. Switch to `AGENT3_TEST_MODE=False` for production remediation
+
+For questions or contributions, see the project repository.
+
+---
+
+*Documentation last updated: 2025-10-31*

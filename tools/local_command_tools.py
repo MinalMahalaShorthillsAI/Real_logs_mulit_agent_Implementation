@@ -21,7 +21,7 @@ from google.adk.tools import FunctionTool
 _active_executions: Set[str] = set()
 _execution_lock = asyncio.Lock()
 _last_execution_time = {}
-MIN_INTERVAL_BETWEEN_COMMANDS = 2  # seconds
+MIN_INTERVAL_BETWEEN_COMMANDS = 0.5  # seconds
 
 # Simple terminal session tracking
 _terminal_session_id = None

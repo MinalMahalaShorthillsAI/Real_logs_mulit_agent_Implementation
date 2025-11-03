@@ -5,13 +5,21 @@ from datetime import datetime
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.models import Gemini
 from google.adk.runners import InMemoryRunner
-from prompts.remediation_agent_prompt import hitl_remediation_instruction
+from prompts.remediation_agent_prompt import hitl_remediation_instruction, test_mode_instruction
 from tools.remediation_hitl_tool import human_remediation_tool
 from tools.local_command_tools import local_execution_tools
 from google.genai import types
 
 # Load environment variables
 load_dotenv()
+
+# ============================================================
+# CONFIGURATION: TEST MODE vs PRODUCTION MODE
+# ============================================================
+# TEST_MODE = True:  Agent 3 exits quickly for Agent 1 testing
+# TEST_MODE = False: Full remediation flow with human approval
+TEST_MODE = os.getenv("AGENT3_TEST_MODE", "True").lower() == "true"  # Default: Test mode
+# ============================================================
 
 # Configure loguru with both console and file output
 logger.remove()  # Remove default handler
@@ -39,26 +47,36 @@ logger.info(f"Remediation Agent logging to: {log_filename}")
 def create_remediation_agent_with_hitl():
     """Create Agent 3 designed for human-in-the-loop remediation planning"""
     try:
-        logger.info("Creating Human-Interactive Remediation Agent...")
+        mode = "TEST MODE" if TEST_MODE else "PRODUCTION MODE"
+        logger.info(f"Creating Remediation Agent in {mode}...")
         
         logger.info("Gemini Pro model configured for human-interactive remediation")
         
-        # Human-interactive remediation planning agent WITH HITL and local execution tools
-        all_tools = [human_remediation_tool] + local_execution_tools
+        # Choose instruction based on mode
+        instruction = test_mode_instruction if TEST_MODE else hitl_remediation_instruction
+        
+        # In test mode, no tools needed (quick exit)
+        # In production mode, full tools available
+        all_tools = [] if TEST_MODE else ([human_remediation_tool] + local_execution_tools)
         
         remediation_agent = LlmAgent(
             name="remediation_agent",
             description="Human-interactive remediation specialist with Human in the loop and local command execution",
             model="gemini-2.5-pro",
             generate_content_config=types.GenerateContentConfig(temperature=0.1),
-            instruction=hitl_remediation_instruction,
-            tools=all_tools  # HITL tool + local execution tools
+            instruction=instruction,
+            tools=all_tools
         )
         
         logger.info("Remediation Agent created successfully")
-        logger.info(f"Model: gemini-2.5-pro (Human-Interactive)")
-        logger.info("Mode: Dry-run planning with human approval")
-        logger.info(f"Tools: {len(all_tools)} tools (HITL + {len(local_execution_tools)} local execution tools)")
+        logger.info(f"Model: gemini-2.5-pro")
+        logger.info(f"Mode: {mode}")
+        if TEST_MODE:
+            logger.info("Test Mode: Quick acknowledgment and exit (for Agent 1 testing)")
+            logger.info("Tools: 0 (test mode)")
+        else:
+            logger.info("Production Mode: Full remediation with human approval")
+            logger.info(f"Tools: {len(all_tools)} tools (HITL + {len(local_execution_tools)} local execution tools)")
         return remediation_agent
         
     except Exception as e:
